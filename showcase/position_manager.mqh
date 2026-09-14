@@ -350,7 +350,6 @@ void CheckFridayClose(PositionTracker &tracker)
       {
          PrintFormat("[FRIDAY] Closing #%d — weekend risk elimination", tracker.ticket);
          ClosePosition(tracker.ticket);
-         tracker.ticket = 0;
       }
    }
 }
