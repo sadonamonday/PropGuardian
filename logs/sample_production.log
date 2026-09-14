@@ -1,0 +1,44 @@
+2026-03-28 08:00:01 [SYSTEM] PropGuardian V2.8.1 initialized — EURUSD H1 (Magic: 654321)
+2026-03-28 08:00:01 [SYSTEM] Mode: Live Challenge | Account: Master $10,000 | Leverage: 1:50
+2026-03-28 08:00:01 [RISK] Daily DD limit: REDACTED% (soft) / REDACTED% (hard)
+2026-03-28 08:00:01 [RISK] Total DD limit: REDACTED% | Emergency: REDACTED%
+2026-03-28 08:00:02 [RISK] New day — Balance: $10,247.30 | Peak: $10,312.00 | Yesterday PnL: $+42.10
+2026-03-28 08:00:02 [ML] Ensemble loaded — NN weights: 87 params | RF stumps: 7 | Warmup: 30/30 trades ✓
+2026-03-28 08:00:02 [STEALTH] Virtual SL/TP mode: ON (server hard SL = REDACTED× emergency)
+2026-03-28 08:00:02 [FILTER] News calendar loaded — 3 events today (1 HIGH: USD CPI 13:30 UTC)
+2026-03-28 08:00:02 [SYSTEM] All systems nominal. Waiting for signals...
+2026-03-28 08:15:00 [SMC] EURUSD — Scanning H1 levels: PDH=1.08420 PDL=1.07890 PWH=1.08650 PWL=1.07510
+2026-03-28 08:15:00 [SMC] EURUSD — No sweep detected at current price 1.08210
+2026-03-28 09:15:00 [SMC] EURUSD — Scanning H1 levels...
+2026-03-28 09:15:01 [SMC] EURUSD — Low swept: price 1.07872 < PDL 1.07890 (buffer: -1.8 pips)
+2026-03-28 09:15:01 [SMC] EURUSD — Rejection candle: wick 68.2% (threshold: REDACTED%) ✓
+2026-03-28 09:15:01 [SMC] EURUSD — Trend filter (SMA 50 D1): BULLISH ✓ (price > SMA)
+2026-03-28 09:15:01 [SMC] EURUSD — Regime filter: TRENDING ✓
+2026-03-28 09:15:02 [ML] EURUSD — Feature vector: [ATR_norm=0.72, WickRatio=0.68, BodyPct=0.31, TrendAngle=12.4, VolRatio=0.95, SpreadNorm=0.22, SessionHour=9, DayOfWeek=5, ConsecLoss=0, DDpct=0.63]
+2026-03-28 09:15:02 [ML] EURUSD — NN confidence: 0.71 | RF confidence: 0.68 | Ensemble: 0.70 ≥ 0.50 ✓
+2026-03-28 09:15:02 [FILTER] Pre-trade filters: spread=8pts ✓ | session=09:15 ✓ | news=OK (CPI in 4h15m) ✓ | volatility=normal ✓ | cooldown=clear ✓
+2026-03-28 09:15:02 [RISK] Pre-trade gates: 7/7 passed ✓ | Trades today: 0/1 | Open: 0/1 | DD: 0.63%
+2026-03-28 09:15:02 [SIZE] EURUSD BUY — Balance: $10,247.30 | Risk: REDACTED% | SL: REDACTED pips | Lots: 0.XX
+2026-03-28 09:15:03 [ORDER] EURUSD BUY 0.XX lots @ 1.07922 | SL: REDACTED (virtual) | TP: REDACTED (virtual) | Server SL: REDACTED (emergency)
+2026-03-28 09:15:03 [ORDER] Fill confirmed — slippage: 0.0 pips | execution: 287ms
+2026-03-28 09:15:03 [STEALTH] #12847291 — Virtual SL: REDACTED | Virtual TP: REDACTED
+2026-03-28 10:15:00 [POS] #12847291 EURUSD BUY — Current: 1.08015 | PnL: +$XX.XX | Unrealized R: +0.47R
+2026-03-28 10:15:00 [FILTER] Friday trailing: will tighten at REDACTED:00 UTC, hard close at REDACTED:00 UTC
+2026-03-28 11:15:00 [POS] #12847291 EURUSD BUY — Current: 1.08142 | PnL: +$XX.XX | Unrealized R: +0.78R
+2026-03-28 11:15:01 [BE] #12847291 — Break-even triggered at 1.07922 (R=0.78 ≥ REDACTED)
+2026-03-28 12:15:00 [POS] #12847291 EURUSD BUY — Current: 1.08287 | PnL: +$XX.XX | Unrealized R: +1.12R
+2026-03-28 12:15:01 [PTP] #12847291 — Partial close 0.XX lots at 1.12R (REDACTED% volume)
+2026-03-28 13:15:00 [FILTER] ⚠️ NEWS BLOCK: USD CPI in 15 minutes — no new trades
+2026-03-28 13:30:00 [FILTER] ⚠️ NEWS: USD CPI released — blocking for REDACTED minutes
+2026-03-28 13:42:01 [FILTER] News cooldown cleared — trading resumed
+2026-03-28 14:15:00 [POS] #12847291 EURUSD BUY — Current: 1.08456 | PnL: +$XX.XX | Unrealized R: +1.68R
+2026-03-28 14:15:01 [TRAIL] #12847291 — ATR trailing SL → 1.08180 (ATR=0.00089 × REDACTED, stealth)
+2026-03-28 15:00:00 [FRIDAY] Tightening trail for #12847291 — weekend protection active
+2026-03-28 15:15:00 [TRAIL] #12847291 — Friday tight trail SL → 1.08350 (aggressive)
+2026-03-28 16:15:00 [POS] #12847291 EURUSD BUY — Current: 1.08390 | PnL: +$XX.XX | Unrealized R: +1.85R
+2026-03-28 16:15:01 [TRAIL] #12847291 — Trail hit at 1.08350. Closing position.
+2026-03-28 16:15:01 [ORDER] #12847291 CLOSED — PnL: +$XX.XX | Duration: 7h00m | Exit: trailing stop
+2026-03-28 16:15:02 [RISK] Trade result: WIN | Consecutive losses reset → 0
+2026-03-28 16:15:02 [RISK] Daily PnL: +$XX.XX | Daily DD: 0.00% | Trades today: 1/1 (limit reached)
+2026-03-28 16:15:02 [SYSTEM] Max trades/day reached. Monitoring only until 00:00 UTC.
+2026-03-28 21:00:00 [FRIDAY] All positions closed. Weekend safe. ✓
