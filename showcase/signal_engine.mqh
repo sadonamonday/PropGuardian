@@ -156,6 +156,17 @@ int GetSymbolIndex(string symbol)
 }
 
 //+------------------------------------------------------------------+
+//| Get Cached ATR Handle                                            |
+//+------------------------------------------------------------------+
+int GetCachedATRHandle(string symbol)
+{
+   int idx = GetSymbolIndex(symbol);
+   if(idx >= 0 && idx < ArraySize(g_atrHandles))
+      return g_atrHandles[idx];
+   return INVALID_HANDLE;
+}
+
+//+------------------------------------------------------------------+
 //| Trend Bias Filter — D1 SMA(50)                                    |
 //| Bullish bias (d1Close > sma50) -> Longs only                     |
 //| Bearish bias (d1Close < sma50) -> Shorts only                    |
@@ -316,7 +327,7 @@ SignalResult CheckSignal(string symbol)
 //+------------------------------------------------------------------+
 //| EA Deinitialization — Release cached indicator handles            |
 //+------------------------------------------------------------------+
-void OnDeinit(const int reason)
+void ReleaseSignalEngineHandles()
 {
    int count = ArraySize(g_SymbolLevels);
    for(int i = 0; i < count; i++)

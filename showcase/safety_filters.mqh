@@ -260,7 +260,7 @@ bool IsToxicVolatility(string symbol)
    return false;
 }
 
-void OnDeinitSafetyFilters(const int reason)
+void ReleaseSafetyFilterHandles()
 {
    int count = ArraySize(g_toxicSymbols);
    for(int i = 0; i < count; i++)
