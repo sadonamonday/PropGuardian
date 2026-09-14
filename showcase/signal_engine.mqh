@@ -6,6 +6,9 @@
 //| rejection candle filter, and D1 SMA50 trend alignment.            |
 //+------------------------------------------------------------------+
 
+#ifndef SIGNAL_ENGINE_MQH
+#define SIGNAL_ENGINE_MQH
+
 #property strict
 
 //+------------------------------------------------------------------+
@@ -123,11 +126,33 @@ void GetSymbolLevels(string symbol, SymbolLevels &levels)
 
    // Add new symbol level tracker
    ArrayResize(g_SymbolLevels, count + 1);
+   ArrayResize(g_maHandles, count + 1);
+   ArrayResize(g_atrHandles, count + 1);
+
    g_SymbolLevels[count].symbol = symbol;
    g_SymbolLevels[count].lastD1Time = 0;
    g_SymbolLevels[count].lastW1Time = 0;
+
+   // Cache iMA and iATR handles for this symbol
+   g_maHandles[count] = iMA(symbol, PERIOD_D1, Trend_SMA_Period, 0, MODE_SMA, PRICE_CLOSE);
+   g_atrHandles[count] = iATR(symbol, PERIOD_H1, ATR_Period);
+
    UpdateSymbolLevels(symbol, g_SymbolLevels[count]);
    levels = g_SymbolLevels[count];
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Get Cached Indicator Index                               |
+//+------------------------------------------------------------------+
+int GetSymbolIndex(string symbol)
+{
+   int count = ArraySize(g_SymbolLevels);
+   for(int i = 0; i < count; i++)
+   {
+      if(g_SymbolLevels[i].symbol == symbol)
+         return i;
+   }
+   return -1;
 }
 
 //+------------------------------------------------------------------+
@@ -137,20 +162,19 @@ void GetSymbolLevels(string symbol, SymbolLevels &levels)
 //+------------------------------------------------------------------+
 int GetTrendBias(string symbol)
 {
-   int maHandle = iMA(symbol, PERIOD_D1, Trend_SMA_Period, 0, MODE_SMA, PRICE_CLOSE);
+   int idx = GetSymbolIndex(symbol);
+   if(idx < 0) return 0;
+
+   int maHandle = g_maHandles[idx];
    if(maHandle == INVALID_HANDLE) return 0;
 
    double ma[];
    ArraySetAsSeries(ma, true);
    if(CopyBuffer(maHandle, 0, 1, 1, ma) <= 0)
-   {
-      IndicatorRelease(maHandle);
       return 0;
-   }
 
    double sma50 = ma[0];
    double d1Close = iClose(symbol, PERIOD_D1, 1);
-   IndicatorRelease(maHandle);
 
    if(d1Close > sma50)
       return 1;   // Bullish bias
@@ -249,19 +273,18 @@ SignalResult CheckSignal(string symbol)
    // 6. Calculate ATR and Stop Distance if signal generated
    if(isLowSweep || isHighSweep)
    {
-      int atrHandle = iATR(symbol, PERIOD_H1, ATR_Period);
+      int idx = GetSymbolIndex(symbol);
+      if(idx < 0) return result;
+
+      int atrHandle = g_atrHandles[idx];
       if(atrHandle == INVALID_HANDLE) return result;
 
       double atr[];
       ArraySetAsSeries(atr, true);
       if(CopyBuffer(atrHandle, 0, 1, 1, atr) <= 0)
-      {
-         IndicatorRelease(atrHandle);
          return result;
-      }
 
       double atrValue = atr[0];
-      IndicatorRelease(atrHandle);
 
       if(atrValue <= 0) return result;
 
@@ -289,3 +312,29 @@ SignalResult CheckSignal(string symbol)
 
    return result;
 }
+
+//+------------------------------------------------------------------+
+//| EA Deinitialization — Release cached indicator handles            |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   int count = ArraySize(g_SymbolLevels);
+   for(int i = 0; i < count; i++)
+   {
+      if(i < ArraySize(g_maHandles) && g_maHandles[i] != INVALID_HANDLE)
+      {
+         IndicatorRelease(g_maHandles[i]);
+         g_maHandles[i] = INVALID_HANDLE;
+      }
+      if(i < ArraySize(g_atrHandles) && g_atrHandles[i] != INVALID_HANDLE)
+      {
+         IndicatorRelease(g_atrHandles[i]);
+         g_atrHandles[i] = INVALID_HANDLE;
+      }
+   }
+   ArrayResize(g_SymbolLevels, 0);
+   ArrayResize(g_maHandles, 0);
+   ArrayResize(g_atrHandles, 0);
+}
+
+#endif
