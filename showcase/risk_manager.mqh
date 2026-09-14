@@ -223,6 +223,11 @@ double CalculateLotSize(const RiskState &state, string symbol, double stopDistan
    return lotSize;
 }
 
+double CalculateLotSize(string symbol, double stopDistance, const RiskState &state)
+{
+   return CalculateLotSize(state, symbol, stopDistance);
+}
+
 //+------------------------------------------------------------------+
 //| Drawdown Monitoring — Double layer (daily + total)                |
 //+------------------------------------------------------------------+

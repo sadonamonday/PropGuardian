@@ -106,11 +106,13 @@ void ClosePartial(ulong ticket, double closeVolume)
    OrderSend(request, result);
 }
 
-double NormalizeVolume(double volume)
+double NormalizeVolume(string symbol, double volume)
 {
-   double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+
+   if(lotStep <= 0) return volume;
 
    double lots = MathFloor(volume / lotStep) * lotStep;
    return MathMax(minLot, MathMin(maxLot, lots));
@@ -242,7 +244,8 @@ void CheckPartialTP(PositionTracker &tracker)
    
    if(profit_R >= Partial_TP_RR)
    {
-      double closeVolume = NormalizeVolume(volume * (Partial_Volume_Pct / 100.0));
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      double closeVolume = NormalizeVolume(symbol, volume * (Partial_Volume_Pct / 100.0));
       
       if(closeVolume > 0)
       {
@@ -347,7 +350,6 @@ void CheckFridayClose(PositionTracker &tracker)
       {
          PrintFormat("[FRIDAY] Closing #%d — weekend risk elimination", tracker.ticket);
          ClosePosition(tracker.ticket);
-         tracker.ticket = 0;
       }
    }
 }
