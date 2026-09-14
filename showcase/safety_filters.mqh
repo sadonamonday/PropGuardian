@@ -187,7 +187,7 @@ bool IsAsianRangeExceeded(string symbol)
 //+------------------------------------------------------------------+
 bool CheckSpread(string symbol)
 {
-   double spread = SymbolInfoInteger(symbol, SYMBOL_SPREAD);
+   long spread = SymbolInfoInteger(symbol, SYMBOL_SPREAD);
    
    if(spread > Max_Spread_Points)
    {

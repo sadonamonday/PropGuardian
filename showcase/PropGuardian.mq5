@@ -121,7 +121,7 @@ void OnTimer()
             {
                if(result.retcode == TRADE_RETCODE_DONE)
                {
-                  InitPositionTracker(g_tracker, result.position, signal.stopDistance, signal.slPrice, 0.0);
+                  InitPositionTracker(g_tracker, result.order, signal.stopDistance, signal.slPrice, 0.0);
                   g_riskState.tradesToday++;
                   break;
                }

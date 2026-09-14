@@ -81,7 +81,11 @@ void ClosePosition(ulong ticket)
    request.price     = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
    request.deviation = 10;
 
-   OrderSend(request, result);
+   if(!OrderSend(request, result))
+   {
+       PrintFormat("[ERROR] ClosePosition failed for #%d: retcode %d",
+                   ticket, result.retcode);
+   }
 }
 
 void ClosePartial(ulong ticket, double closeVolume)
@@ -103,7 +107,11 @@ void ClosePartial(ulong ticket, double closeVolume)
    request.price     = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
    request.deviation = 10;
 
-   OrderSend(request, result);
+   if(!OrderSend(request, result))
+   {
+       PrintFormat("[ERROR] ClosePartial failed for #%d: retcode %d",
+                   ticket, result.retcode);
+   }
 }
 
 double NormalizeVolume(string symbol, double volume)
