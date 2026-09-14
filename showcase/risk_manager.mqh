@@ -6,8 +6,12 @@
 //| drawdown scaling, and position sizing.                            |
 //+------------------------------------------------------------------+
 
+#ifndef RISK_MANAGER_MQH
+#define RISK_MANAGER_MQH
+
 #include "safety_filters.mqh"
 #include "signal_engine.mqh"
+#include "position_manager.mqh"
 
 // Input parameter declarations for risk management
 #ifndef RISK_PARAMS_DEFINED
@@ -38,8 +42,8 @@ struct RiskState
 };
 
 // Forward Declarations
-double CalculateTotalDD();
-double CalculatePortfolioDD();
+double CalculateTotalDD(const RiskState &state);
+double CalculatePortfolioDD(const RiskState &state);
 int    CountOpenPositions();
 void   EmergencyCloseAll();
 
@@ -124,7 +128,7 @@ bool CanOpenTrade(const RiskState &state, string symbol, SignalResult &outSignal
    }
    
    // Gate 7: Portfolio drawdown check
-   double portfolioDD = CalculatePortfolioDD();
+   double portfolioDD = CalculatePortfolioDD(state);
    if(portfolioDD >= Max_Portfolio_DD_Pct)
    {
       PrintFormat("[RISK] BLOCKED: Portfolio DD %.2f%% >= %.2f%%",
@@ -168,7 +172,7 @@ bool CanOpenTrade(const RiskState &state, string symbol)
 //| Clamp to [SYMBOL_VOLUME_MIN, SYMBOL_VOLUME_MAX]                   |
 //| If LotSize < SYMBOL_VOLUME_MIN: SKIP trade (do not round up)      |
 //+------------------------------------------------------------------+
-double CalculateLotSize(string symbol, double stopDistance)
+double CalculateLotSize(const RiskState &state, string symbol, double stopDistance)
 {
    if(stopDistance <= 0) return 0.0;
    
@@ -176,13 +180,12 @@ double CalculateLotSize(string symbol, double stopDistance)
    double riskPct = Risk_Per_Trade;  // Default 1.0%
    
    // Drawdown scaling: halve risk to 0.5% if daily PnL <= -2.5% or total DD >= 7.0%
-   double dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE); // or dailyReferenceBalance
    double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    double dailyPnLPct = 0.0;
-   if(balance > 0)
-      dailyPnLPct = (currentEquity - balance) / balance * 100.0;
+   if(state.dailyReferenceBalance > 0)
+      dailyPnLPct = (currentEquity - state.dailyReferenceBalance) / state.dailyReferenceBalance * 100.0;
 
-   double currentDD = CalculateTotalDD();
+   double currentDD = CalculateTotalDD(state);
 
    if(dailyPnLPct <= -Daily_DD_ScaleDown || currentDD >= DD_Threshold_ScaleDown)
    {
@@ -255,7 +258,7 @@ void UpdateDrawdownState(RiskState &state)
    }
    
    // Total drawdown check (7.0% scale down, 10.0% emergency kill switch)
-   double totalDD = CalculateTotalDD();
+   double totalDD = CalculateTotalDD(state);
    if(totalDD >= Portfolio_Emergency_DD_Pct)
    {
       state.isHardStopped = true;
@@ -266,17 +269,16 @@ void UpdateDrawdownState(RiskState &state)
 }
 
 // Helper stub functions if not defined elsewhere
-double CalculateTotalDD()
+double CalculateTotalDD(const RiskState &state)
 {
-   double equityPeak = AccountInfoDouble(ACCOUNT_BALANCE); // or peak tracked
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   if(equityPeak <= 0) return 0.0;
-   return MathMax(0.0, (equityPeak - equity) / equityPeak * 100.0);
+   if(state.equityPeak <= 0) return 0.0;
+   return MathMax(0.0, (state.equityPeak - equity) / state.equityPeak * 100.0);
 }
 
-double CalculatePortfolioDD()
+double CalculatePortfolioDD(const RiskState &state)
 {
-   return CalculateTotalDD();
+   return CalculateTotalDD(state);
 }
 
 int CountOpenPositions()
@@ -296,3 +298,5 @@ void EmergencyCloseAll()
       }
    }
 }
+
+#endif

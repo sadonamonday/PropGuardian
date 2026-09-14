@@ -5,6 +5,12 @@
 //| If ANY filter returns false, the signal is discarded.             |
 //+------------------------------------------------------------------+
 
+#ifndef SAFETY_FILTERS_MQH
+#define SAFETY_FILTERS_MQH
+
+#include "signal_engine.mqh"
+#include "position_manager.mqh"
+
 // Parameter declarations / defaults
 #ifndef SAFETY_PARAMS_DEFINED
 #define SAFETY_PARAMS_DEFINED
@@ -194,11 +200,39 @@ bool CheckSpread(string symbol)
 
 //+------------------------------------------------------------------+
 //| Toxic Volatility — Block when ATR exceeds historical average      |
+//| Cached per-symbol ATR handles to prevent indicator memory leaks  |
 //+------------------------------------------------------------------+
+static string g_toxicSymbols[];
+static int    g_toxicH1Handles[];
+static int    g_toxicD1Handles[];
+
+int GetToxicSymbolIndex(string symbol)
+{
+   int count = ArraySize(g_toxicSymbols);
+   for(int i = 0; i < count; i++)
+   {
+      if(g_toxicSymbols[i] == symbol)
+         return i;
+   }
+
+   ArrayResize(g_toxicSymbols, count + 1);
+   ArrayResize(g_toxicH1Handles, count + 1);
+   ArrayResize(g_toxicD1Handles, count + 1);
+
+   g_toxicSymbols[count] = symbol;
+   g_toxicH1Handles[count] = iATR(symbol, PERIOD_H1, ATR_Period);
+   g_toxicD1Handles[count] = iATR(symbol, PERIOD_D1, ATR_Period * 5);
+
+   return count;
+}
+
 bool IsToxicVolatility(string symbol)
 {
-   int atrCurrentHandle = iATR(symbol, PERIOD_H1, ATR_Period);
-   int atrHistHandle    = iATR(symbol, PERIOD_D1, ATR_Period * 5);
+   int idx = GetToxicSymbolIndex(symbol);
+   if(idx < 0) return false;
+
+   int atrCurrentHandle = g_toxicH1Handles[idx];
+   int atrHistHandle    = g_toxicD1Handles[idx];
    
    if(atrCurrentHandle == INVALID_HANDLE || atrHistHandle == INVALID_HANDLE)
       return false;
@@ -211,16 +245,11 @@ bool IsToxicVolatility(string symbol)
    if(CopyBuffer(atrCurrentHandle, 0, 1, 1, atrCurr) <= 0 ||
       CopyBuffer(atrHistHandle, 0, 1, 1, atrHist) <= 0)
    {
-      IndicatorRelease(atrCurrentHandle);
-      IndicatorRelease(atrHistHandle);
       return false;
    }
 
    double atrCurrent = atrCurr[0];
    double atrHistorical = atrHist[0];
-
-   IndicatorRelease(atrCurrentHandle);
-   IndicatorRelease(atrHistHandle);
 
    if(atrHistorical > 0 && atrCurrent > atrHistorical * ATR_Max_Multiplier)
    {
@@ -229,6 +258,27 @@ bool IsToxicVolatility(string symbol)
       return true;
    }
    return false;
+}
+
+void OnDeinitSafetyFilters(const int reason)
+{
+   int count = ArraySize(g_toxicSymbols);
+   for(int i = 0; i < count; i++)
+   {
+      if(i < ArraySize(g_toxicH1Handles) && g_toxicH1Handles[i] != INVALID_HANDLE)
+      {
+         IndicatorRelease(g_toxicH1Handles[i]);
+         g_toxicH1Handles[i] = INVALID_HANDLE;
+      }
+      if(i < ArraySize(g_toxicD1Handles) && g_toxicD1Handles[i] != INVALID_HANDLE)
+      {
+         IndicatorRelease(g_toxicD1Handles[i]);
+         g_toxicD1Handles[i] = INVALID_HANDLE;
+      }
+   }
+   ArrayResize(g_toxicSymbols, 0);
+   ArrayResize(g_toxicH1Handles, 0);
+   ArrayResize(g_toxicD1Handles, 0);
 }
 
 //+------------------------------------------------------------------+
@@ -308,3 +358,5 @@ bool IsInCooldown(string symbol)
    }
    return false;
 }
+
+#endif

@@ -6,6 +6,11 @@
 //| and ATR trailing stop (ATR*2.5 after partial TP).                 |
 //+------------------------------------------------------------------+
 
+#ifndef POSITION_MANAGER_MQH
+#define POSITION_MANAGER_MQH
+
+#include "signal_engine.mqh"
+
 // Configuration input parameters if not already declared globally
 #ifndef INPUT_PARAMS_DEFINED
 #define INPUT_PARAMS_DEFINED
@@ -346,3 +351,5 @@ void CheckFridayClose(PositionTracker &tracker)
       }
    }
 }
+
+#endif
