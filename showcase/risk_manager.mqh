@@ -1,10 +1,27 @@
 //+------------------------------------------------------------------+
-//| Risk Manager — Capital Protection Layer (Sanitized Excerpt)       |
+//| Risk Manager — Capital Protection Layer                           |
 //|                                                                    |
-//| This is a sanitized excerpt from PropGuardian V2.8.1.             |
-//| All exact thresholds use input parameters (values not shown).     |
-//| Demonstrates the multi-layered risk architecture in MQL5.        |
+//| Multi-layered risk architecture in MQL5 for PropGuardian EA.      |
+//| Integrates pre-trade risk gates, drawdown monitoring,              |
+//| drawdown scaling, and position sizing.                            |
 //+------------------------------------------------------------------+
+
+#include "safety_filters.mqh"
+#include "signal_engine.mqh"
+
+// Input parameter declarations for risk management
+#ifndef RISK_PARAMS_DEFINED
+#define RISK_PARAMS_DEFINED
+input int    Max_Trades_Per_Day       = 1;      // Max allowed trades per day
+input int    Max_Consecutive_Losses   = 3;      // Max consecutive losses before circuit breaker
+input int    Max_Open_Positions       = 1;      // Max simultaneous open positions
+input double Max_Portfolio_DD_Pct     = 7.0;    // Max portfolio drawdown percentage
+input double Max_Daily_Loss_Soft_Pct  = 2.5;    // Daily drawdown soft stop threshold (%)
+input double Max_Daily_Loss_Hard_Pct  = 5.0;    // Daily drawdown hard stop threshold (%)
+input double Portfolio_Emergency_DD_Pct = 10.0; // Total drawdown emergency stop threshold (%)
+input double DD_Threshold_ScaleDown   = 7.0;    // Total DD threshold to halve risk (%)
+input double Daily_DD_ScaleDown       = 2.5;    // Daily DD threshold to halve risk (%)
+#endif
 
 //+------------------------------------------------------------------+
 //| Risk State Structure                                              |
@@ -20,12 +37,14 @@ struct RiskState
    int    tradesToday;            // Trade count today
 };
 
+// Forward Declarations
+double CalculateTotalDD();
+double CalculatePortfolioDD();
+int    CountOpenPositions();
+void   EmergencyCloseAll();
+
 //+------------------------------------------------------------------+
 //| Daily Reset — CRITICAL: Must run BEFORE risk checks               |
-//|                                                                    |
-//| Bug #33 Lesson: If this runs AFTER soft/hard stop checks,        |
-//| the bot stays dead forever after a bad day because the stops     |
-//| never get reset. Now it's the FIRST thing in OnTick().           |
 //+------------------------------------------------------------------+
 bool CheckNewDay(RiskState &state)
 {
@@ -54,10 +73,10 @@ bool CheckNewDay(RiskState &state)
 }
 
 //+------------------------------------------------------------------+
-//| Pre-Trade Risk Gate — 7 independent checks                        |
-//| ALL must pass before any order is sent to the broker.             |
+//| Pre-Trade Risk Gate — Multi-layer checks                          |
+//| ALL risk gates AND safety filters AND signal engine must agree.   |
 //+------------------------------------------------------------------+
-bool CanOpenTrade(const RiskState &state, string symbol)
+bool CanOpenTrade(const RiskState &state, string symbol, SignalResult &outSignal)
 {
    // Gate 1: Hard stop (emergency — all positions being closed)
    if(state.isHardStopped)
@@ -73,14 +92,14 @@ bool CanOpenTrade(const RiskState &state, string symbol)
       return false;
    }
    
-   // Gate 3: Max trades per day (V2.8.1: ultra-conservative = 1)
+   // Gate 3: Max trades per day
    if(state.tradesToday >= Max_Trades_Per_Day)
    {
       PrintFormat("[RISK] BLOCKED: Max %d trades/day reached", Max_Trades_Per_Day);
       return false;
    }
    
-   // Gate 4: Max losses per day
+   // Gate 4: Max losses per day / circuit breaker
    if(state.consecutiveLosses >= Max_Consecutive_Losses)
    {
       PrintFormat("[RISK] BLOCKED: Circuit breaker — %d consecutive losses",
@@ -113,47 +132,92 @@ bool CanOpenTrade(const RiskState &state, string symbol)
       return false;
    }
    
+   // Gate 8: Safety Filters Gate
+   if(!PassesAllFilters(symbol))
+   {
+      PrintFormat("[RISK] BLOCKED: Safety filters gate failed for %s", symbol);
+      return false;
+   }
+
+   // Gate 9: Signal Engine Gate
+   outSignal = CheckSignal(symbol);
+   if(outSignal.type == SIGNAL_NONE)
+   {
+      return false; // No trade signal
+   }
+
+   PrintFormat("[RISK] APPROVED: All risk gates, safety filters, and signal engine confirm trade for %s (%s)",
+               symbol, outSignal.type == SIGNAL_BUY ? "BUY" : "SELL");
    return true;
+}
+
+// Overload for general risk gate checking without returning signal struct
+bool CanOpenTrade(const RiskState &state, string symbol)
+{
+   SignalResult signal;
+   return CanOpenTrade(state, symbol, signal);
 }
 
 //+------------------------------------------------------------------+
 //| Position Sizing — ATR-based with drawdown scaling                 |
 //|                                                                    |
-//| Formula: lots = (balance × risk%) / (SL_pips × pip_value)        |
-//| When approaching DD limits, risk% is automatically halved.       |
+//| RiskAmount = Balance * RiskPercent                                |
+//| LossPerLot = (StopDistance / TickSize) * TickValue               |
+//| RawLotSize = RiskAmount / LossPerLot                             |
+//| LotSize = MathFloor(RawLotSize / LotStep) * LotStep              |
+//| Clamp to [SYMBOL_VOLUME_MIN, SYMBOL_VOLUME_MAX]                   |
+//| If LotSize < SYMBOL_VOLUME_MIN: SKIP trade (do not round up)      |
 //+------------------------------------------------------------------+
-double CalculateLotSize(string symbol, double slPips)
+double CalculateLotSize(string symbol, double stopDistance)
 {
-   if(slPips <= 0) return 0.0;
+   if(stopDistance <= 0) return 0.0;
    
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double riskPct = Risk_Per_Trade;  // From input parameter
+   double riskPct = Risk_Per_Trade;  // Default 1.0%
    
-   // Drawdown scaling: halve risk when approaching limits
+   // Drawdown scaling: halve risk to 0.5% if daily PnL <= -2.5% or total DD >= 7.0%
+   double dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE); // or dailyReferenceBalance
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double dailyPnLPct = 0.0;
+   if(balance > 0)
+      dailyPnLPct = (currentEquity - balance) / balance * 100.0;
+
    double currentDD = CalculateTotalDD();
-   if(currentDD >= DD_Threshold_ScaleDown)
+
+   if(dailyPnLPct <= -Daily_DD_ScaleDown || currentDD >= DD_Threshold_ScaleDown)
    {
-      riskPct *= 0.5;
-      PrintFormat("[RISK] DD scaling active: %.2f%% DD → risk halved to %.2f%%",
-                  currentDD, riskPct);
+      riskPct *= 0.5; // Halved to 0.5%
+      PrintFormat("[RISK] DD scaling active (Daily PnL: %.2f%%, Total DD: %.2f%%) → Risk halved to %.2f%%",
+                  dailyPnLPct, currentDD, riskPct);
    }
    
    double riskAmount = balance * (riskPct / 100.0);
-   double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-   double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-   double pipValue = tickValue / tickSize * SymbolInfoDouble(symbol, SYMBOL_POINT);
-   
-   double lots = riskAmount / (slPips * pipValue);
-   
-   // Normalize to broker's lot step
-   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-   double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double tickSize   = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+
+   if(tickSize <= 0 || tickValue <= 0) return 0.0;
+
+   double lossPerLot = (stopDistance / tickSize) * tickValue;
+   if(lossPerLot <= 0) return 0.0;
+
+   double rawLotSize = riskAmount / lossPerLot;
+
+   double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
    double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-   
-   lots = MathFloor(lots / lotStep) * lotStep;
-   lots = MathMax(minLot, MathMin(maxLot, lots));
-   
-   return lots;
+
+   double lotSize = MathFloor(rawLotSize / lotStep) * lotStep;
+
+   // CRITICAL: If LotSize < SYMBOL_VOLUME_MIN, SKIP the trade — do NOT round up!
+   if(lotSize < minLot)
+   {
+      PrintFormat("[RISK] Calculated lot size %.2f < min lot %.2f. SKIPPING trade to preserve risk cap.",
+                  lotSize, minLot);
+      return 0.0;
+   }
+
+   lotSize = MathMin(maxLot, lotSize);
+   return lotSize;
 }
 
 //+------------------------------------------------------------------+
@@ -161,18 +225,18 @@ double CalculateLotSize(string symbol, double slPips)
 //+------------------------------------------------------------------+
 void UpdateDrawdownState(RiskState &state)
 {
-   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    
    state.equityPeak = MathMax(state.equityPeak, equity);
-   state.dailyPnL = equity - state.dailyReferenceBalance;
+   state.dailyPnL   = equity - state.dailyReferenceBalance;
    
    // Daily loss check
    if(state.dailyReferenceBalance > 0)
    {
       double dailyLossPct = (-state.dailyPnL / state.dailyReferenceBalance) * 100.0;
       
-      // Soft stop: block new trades
+      // Soft stop (-2.5%): block new trades
       if(dailyLossPct >= Max_Daily_Loss_Soft_Pct && !state.isSoftStopped)
       {
          state.isSoftStopped = true;
@@ -180,23 +244,55 @@ void UpdateDrawdownState(RiskState &state)
                      dailyLossPct, Max_Daily_Loss_Soft_Pct);
       }
       
-      // Hard stop: close everything
+      // Hard stop (-5.0%): close everything & halt EA for the trading day
       if(dailyLossPct >= Max_Daily_Loss_Hard_Pct && !state.isHardStopped)
       {
          state.isHardStopped = true;
-         PrintFormat("[RISK] 🚨 HARD STOP: Daily loss %.2f%% >= %.2f%%",
+         PrintFormat("[RISK] 🚨 HARD STOP: Daily loss %.2f%% >= %.2f%% — closing all positions & halting EA for the day",
                      dailyLossPct, Max_Daily_Loss_Hard_Pct);
          EmergencyCloseAll();
       }
    }
    
-   // Total drawdown kill switch
+   // Total drawdown check (7.0% scale down, 10.0% emergency kill switch)
    double totalDD = CalculateTotalDD();
    if(totalDD >= Portfolio_Emergency_DD_Pct)
    {
       state.isHardStopped = true;
-      PrintFormat("[RISK] 🚨 EMERGENCY: Total DD %.2f%% — closing ALL positions",
-                  totalDD);
+      PrintFormat("[RISK] 🚨 EMERGENCY: Total DD %.2f%% >= %.2f%% — closing ALL positions & halting EA entirely",
+                  totalDD, Portfolio_Emergency_DD_Pct);
       EmergencyCloseAll();
+   }
+}
+
+// Helper stub functions if not defined elsewhere
+double CalculateTotalDD()
+{
+   double equityPeak = AccountInfoDouble(ACCOUNT_BALANCE); // or peak tracked
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equityPeak <= 0) return 0.0;
+   return MathMax(0.0, (equityPeak - equity) / equityPeak * 100.0);
+}
+
+double CalculatePortfolioDD()
+{
+   return CalculateTotalDD();
+}
+
+int CountOpenPositions()
+{
+   return PositionsTotal();
+}
+
+void EmergencyCloseAll()
+{
+   int total = PositionsTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
+      {
+         ClosePosition(ticket);
+      }
    }
 }
