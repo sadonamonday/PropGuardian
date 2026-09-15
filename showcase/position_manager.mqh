@@ -37,6 +37,16 @@ struct PositionTracker
    double originalSLDistance;  // Original SL distance for R calculations (FROZEN at trade open)
 };
 
+ENUM_ORDER_TYPE_FILLING GetSupportedFillingMode(string symbol)
+{
+   long filling = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+      return ORDER_FILLING_FOK;
+   if((filling & SYMBOL_FILLING_IOC) != 0)
+      return ORDER_FILLING_IOC;
+   return ORDER_FILLING_RETURN;
+}
+
 // Global array or helper functions placeholder for position modification
 void ModifyPositionSL(ulong ticket, double newSL)
 {
@@ -73,13 +83,14 @@ void ClosePosition(ulong ticket)
    ZeroMemory(request);
    ZeroMemory(result);
 
-   request.action    = TRADE_ACTION_DEAL;
-   request.position  = ticket;
-   request.symbol    = symbol;
-   request.volume    = volume;
-   request.type      = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-   request.price     = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
-   request.deviation = 10;
+   request.action       = TRADE_ACTION_DEAL;
+   request.position     = ticket;
+   request.symbol       = symbol;
+   request.volume       = volume;
+   request.type         = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   request.price        = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
+   request.deviation    = 10;
+   request.type_filling = GetSupportedFillingMode(symbol);
 
    if(!OrderSend(request, result))
    {
@@ -99,13 +110,14 @@ void ClosePartial(ulong ticket, double closeVolume)
    ZeroMemory(request);
    ZeroMemory(result);
 
-   request.action    = TRADE_ACTION_DEAL;
-   request.position  = ticket;
-   request.symbol    = symbol;
-   request.volume    = closeVolume;
-   request.type      = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-   request.price     = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
-   request.deviation = 10;
+   request.action       = TRADE_ACTION_DEAL;
+   request.position     = ticket;
+   request.symbol       = symbol;
+   request.volume       = closeVolume;
+   request.type         = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   request.price        = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
+   request.deviation    = 10;
+   request.type_filling = GetSupportedFillingMode(symbol);
 
    if(!OrderSend(request, result))
    {

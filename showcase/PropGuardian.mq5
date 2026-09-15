@@ -107,15 +107,16 @@ void OnTimer()
             ZeroMemory(request);
             ZeroMemory(result);
 
-            request.action    = TRADE_ACTION_DEAL;
-            request.symbol    = symbol;
-            request.volume    = lots;
-            request.type      = (signal.type == SIGNAL_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-            request.price     = signal.entryPrice;
-            request.sl        = signal.slPrice;
-            request.tp        = 0.0;
-            request.deviation = 10;
-            request.magic     = Magic_Number;
+            request.action       = TRADE_ACTION_DEAL;
+            request.symbol       = symbol;
+            request.volume       = lots;
+            request.type         = (signal.type == SIGNAL_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+            request.price        = signal.entryPrice;
+            request.sl           = signal.slPrice;
+            request.tp           = 0.0;
+            request.deviation    = 10;
+            request.magic        = Magic_Number;
+            request.type_filling = GetSupportedFillingMode(symbol);
 
             if(OrderSend(request, result))
             {
