@@ -18,6 +18,7 @@
 #define RISK_PARAMS_DEFINED
 input int    Max_Trades_Per_Day       = 1;      // Max allowed trades per day
 input int    Max_Consecutive_Losses   = 3;      // Max consecutive losses before circuit breaker
+input int    Circuit_Breaker_Cooldown_Days = 5; // Cooldown days after circuit breaker tripped
 input int    Max_Open_Positions       = 1;      // Max simultaneous open positions
 input double Max_Portfolio_DD_Pct     = 7.0;    // Max portfolio drawdown percentage
 input double Max_Daily_Loss_Soft_Pct  = 2.5;    // Daily drawdown soft stop threshold (%)
@@ -39,6 +40,7 @@ struct RiskState
    bool   isHardStopped;          // All positions to be closed
    int    consecutiveLosses;      // Sequential losing trades
    int    tradesToday;            // Trade count today
+   datetime circuitBreakerResetTime; // 0 = not tripped
 };
 
 // Forward Declarations
@@ -80,7 +82,7 @@ bool CheckNewDay(RiskState &state)
 //| Pre-Trade Risk Gate — Multi-layer checks                          |
 //| ALL risk gates AND safety filters AND signal engine must agree.   |
 //+------------------------------------------------------------------+
-bool CanOpenTrade(const RiskState &state, string symbol, SignalResult &outSignal)
+bool CanOpenTrade(RiskState &state, string symbol, SignalResult &outSignal)
 {
    // Gate 1: Hard stop (emergency — all positions being closed)
    if(state.isHardStopped)
@@ -106,9 +108,19 @@ bool CanOpenTrade(const RiskState &state, string symbol, SignalResult &outSignal
    // Gate 4: Max losses per day / circuit breaker
    if(state.consecutiveLosses >= Max_Consecutive_Losses)
    {
-      PrintFormat("[RISK] BLOCKED: Circuit breaker — %d consecutive losses",
-                  state.consecutiveLosses);
-      return false;
+      if(TimeCurrent() >= state.circuitBreakerResetTime)
+      {
+         state.consecutiveLosses = 0;
+         state.circuitBreakerResetTime = 0;
+         PrintFormat("[RISK] Circuit breaker reset after %d-day cooldown",
+                     Circuit_Breaker_Cooldown_Days);
+      }
+      else
+      {
+         PrintFormat("[RISK] BLOCKED: Circuit breaker — %d consecutive losses (cooldown until %s)",
+                     state.consecutiveLosses, TimeToString(state.circuitBreakerResetTime));
+         return false;
+      }
    }
    
    // Gate 5: Max open positions
@@ -156,7 +168,7 @@ bool CanOpenTrade(const RiskState &state, string symbol, SignalResult &outSignal
 }
 
 // Overload for general risk gate checking without returning signal struct
-bool CanOpenTrade(const RiskState &state, string symbol)
+bool CanOpenTrade(RiskState &state, string symbol)
 {
    SignalResult signal;
    return CanOpenTrade(state, symbol, signal);
