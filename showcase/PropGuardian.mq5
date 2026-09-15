@@ -186,7 +186,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
             if(totalProfit > 0.0)
                g_riskState.consecutiveLosses = 0;
             else
+            {
                g_riskState.consecutiveLosses++;
+               if(g_riskState.consecutiveLosses >= Max_Consecutive_Losses)
+                  g_riskState.circuitBreakerResetTime = TimeCurrent() + (Circuit_Breaker_Cooldown_Days * 86400);
+            }
 
             g_tracker.ticket = 0;
          }
