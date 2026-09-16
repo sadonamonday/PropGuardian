@@ -19,7 +19,7 @@ input bool   Use_Breakeven            = true;   // Enable break-even
 input bool   Use_Partial_TP           = true;   // Enable partial TP
 input bool   Use_Trailing_Stop        = true;   // Enable trailing stop
 input bool   Use_ATR_Trailing         = true;   // Enable ATR-based trailing
-input double Trailing_Start_RR        = 1.5;    // Trailing start threshold in R (starts after partial TP)
+input double Trailing_Start_RR        = 4.0;    // Trailing start threshold in R (starts after partial TP)
 input bool   Close_On_Friday          = true;   // Close open trades on Friday
 input int    Friday_Trail_Hour        = 20;     // Friday aggressive trail start hour
 input int    Friday_Close_Hour        = 21;     // Friday hard close hour
@@ -34,6 +34,7 @@ struct PositionTracker
    double virtualSL;          // In-memory SL (stealth mode)
    double virtualTP;          // In-memory TP (stealth mode)
    bool   partialClosed;      // Has partial TP been taken?
+   bool   partial2Closed;     // Has second partial TP been taken?
    double originalSLDistance;  // Original SL distance for R calculations (FROZEN at trade open)
 };
 
@@ -146,6 +147,7 @@ void InitPositionTracker(PositionTracker &tracker, ulong ticket, double slDistan
    tracker.ticket = ticket;
    tracker.originalSLDistance = slDistance; // Freeze original risk distance
    tracker.partialClosed = false;
+   tracker.partial2Closed = false;
    tracker.virtualSL = initialSL;
    tracker.virtualTP = initialTP;
 }
@@ -278,8 +280,44 @@ void CheckPartialTP(PositionTracker &tracker)
 }
 
 //+------------------------------------------------------------------+
+//| Second Partial Take Profit — Lock profits on second target        |
+//+------------------------------------------------------------------+
+void CheckPartialTP2(PositionTracker &tracker)
+{
+   if(!Use_Partial_TP || !tracker.partialClosed || tracker.partial2Closed) return;
+   if(tracker.ticket == 0 || tracker.originalSLDistance <= 0) return;
+
+   if(!PositionSelectByTicket(tracker.ticket)) return;
+
+   double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+   double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+   double volume = PositionGetDouble(POSITION_VOLUME);
+   long posType = PositionGetInteger(POSITION_TYPE);
+
+   double profit_R = 0;
+   if(posType == POSITION_TYPE_BUY)
+      profit_R = (currentPrice - entryPrice) / tracker.originalSLDistance;
+   else
+      profit_R = (entryPrice - currentPrice) / tracker.originalSLDistance;
+
+   if(profit_R >= Partial2_TP_RR)
+   {
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      double closeVolume = NormalizeVolume(symbol, volume * (Partial2_Volume_Pct / 100.0));
+
+      if(closeVolume > 0)
+      {
+         ClosePartial(tracker.ticket, closeVolume);
+         tracker.partial2Closed = true;
+         PrintFormat("[PTP2] #%d — Second partial close %.2f lots at %.2f R (%.1f%% volume)",
+                     tracker.ticket, closeVolume, profit_R, Partial2_Volume_Pct);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| ATR Trailing Stop — Dynamic trail based on volatility             |
-//| Starts only after partial TP has fired (+1.5R)                   |
+//| Starts only after partial TP has fired (+4.0R)                   |
 //+------------------------------------------------------------------+
 void CheckATRTrailing(PositionTracker &tracker, double atrValue)
 {
@@ -306,7 +344,10 @@ void CheckATRTrailing(PositionTracker &tracker, double atrValue)
    // Double check minimum profit threshold
    if(profit_R < Trailing_Start_RR) return;
    
-   double trailDistance = atrValue * ATR_Trailing_Multiplier;
+   double multiplier = tracker.partial2Closed
+                        ? ATR_Trailing_Multiplier_Tight
+                        : ATR_Trailing_Multiplier;
+   double trailDistance = atrValue * multiplier;
    double newSL = 0;
    
    if(posType == POSITION_TYPE_BUY)
