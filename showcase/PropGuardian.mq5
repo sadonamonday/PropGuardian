@@ -77,6 +77,7 @@ void OnTimer()
          ManageStealthMode(g_tracker);
          CheckBreakEven(g_tracker);
          CheckPartialTP(g_tracker);
+         CheckPartialTP2(g_tracker);   // NEW
          CheckATRTrailing(g_tracker, atrValue);
          CheckFridayClose(g_tracker);
       }
