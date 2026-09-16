@@ -139,15 +139,6 @@ bool CanOpenTrade(RiskState &state, string symbol, SignalResult &outSignal)
       return false;
    }
    
-   // Gate 7: Portfolio drawdown check
-   double portfolioDD = CalculatePortfolioDD(state);
-   if(portfolioDD >= Max_Portfolio_DD_Pct)
-   {
-      PrintFormat("[RISK] BLOCKED: Portfolio DD %.2f%% >= %.2f%%",
-                  portfolioDD, Max_Portfolio_DD_Pct);
-      return false;
-   }
-   
    // Gate 8: Safety Filters Gate
    if(!PassesAllFilters(symbol))
    {
