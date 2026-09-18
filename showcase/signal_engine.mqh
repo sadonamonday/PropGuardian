@@ -20,12 +20,12 @@ input int    ADX_Regime_Period        = 14;     // D1 ADX period
 input double ADX_Max_Threshold        = 30.0;   // block trades when ADX >= this
 input int    ATR_Period               = 14;     // H1 ATR period for SL and trailing
 input double SL_ATR_Multiplier        = 3.0;    // SL distance = ATR * multiplier
-input double Breakeven_Trigger_RR              = 1.0;   // R-multiple to trigger break-even
-input double Partial_TP_RR                     = 1.5;   // R-multiple to trigger partial TP
-input double Partial_Volume_Pct                = 50.0;  // Partial TP volume percentage
+input double Breakeven_Trigger_RR              = 4.0;   // R-multiple to trigger break-even
+input double Partial_TP_RR                     = 4.0;   // R-multiple to trigger partial TP
+input double Partial_Volume_Pct                = 20.0;  // Partial TP volume percentage
 input double Partial2_TP_RR                    = 10.0;  // Second partial TP trigger (R-multiple)
 input double Partial2_Volume_Pct               = 50.0;  // Volume % of remaining position for second partial
-input double ATR_Trailing_Multiplier           = 2.5;   // Wide ATR multiplier for trailing stop (before partial 2)
+input double ATR_Trailing_Multiplier           = 3.0;   // Wide ATR multiplier for trailing stop (before partial 2)
 input double ATR_Trailing_Multiplier_Tight     = 1.6;   // Tight ATR multiplier for trailing stop (after partial 2)
 input int    GMT_Offset               = 2;      // Broker server offset from GMT (hours)
 input double Max_Asian_Range_Pips     = 50.0;   // Max Asian range in pips (00:00-05:00 GMT)
