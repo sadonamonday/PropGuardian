@@ -16,14 +16,16 @@
 //+------------------------------------------------------------------+
 input double Rejection_Wick_Ratio     = 2.0;    // Wick-to-body ratio for rejection candle
 input int    Trend_SMA_Period         = 50;     // D1 Trend SMA period
+input int    ADX_Regime_Period        = 14;     // D1 ADX period
+input double ADX_Max_Threshold        = 30.0;   // block trades when ADX >= this
 input int    ATR_Period               = 14;     // H1 ATR period for SL and trailing
 input double SL_ATR_Multiplier        = 3.0;    // SL distance = ATR * multiplier
-input double Breakeven_Trigger_RR              = 4.0;   // R-multiple to trigger break-even
-input double Partial_TP_RR                     = 4.0;   // R-multiple to trigger partial TP
-input double Partial_Volume_Pct                = 20.0;  // Partial TP volume percentage
+input double Breakeven_Trigger_RR              = 1.0;   // R-multiple to trigger break-even
+input double Partial_TP_RR                     = 1.5;   // R-multiple to trigger partial TP
+input double Partial_Volume_Pct                = 50.0;  // Partial TP volume percentage
 input double Partial2_TP_RR                    = 10.0;  // Second partial TP trigger (R-multiple)
 input double Partial2_Volume_Pct               = 50.0;  // Volume % of remaining position for second partial
-input double ATR_Trailing_Multiplier           = 3.0;   // Wide ATR multiplier for trailing stop (before partial 2)
+input double ATR_Trailing_Multiplier           = 2.5;   // Wide ATR multiplier for trailing stop (before partial 2)
 input double ATR_Trailing_Multiplier_Tight     = 1.6;   // Tight ATR multiplier for trailing stop (after partial 2)
 input int    GMT_Offset               = 2;      // Broker server offset from GMT (hours)
 input double Max_Asian_Range_Pips     = 50.0;   // Max Asian range in pips (00:00-05:00 GMT)
@@ -71,6 +73,7 @@ static SymbolLevels g_SymbolLevels[];
 // Indicator Handles Cache
 static int g_maHandles[];
 static int g_atrHandles[];
+static int g_adxHandles[];
 
 //+------------------------------------------------------------------+
 //| Helper: Check if symbol is in TradeableSymbols                    |
@@ -131,14 +134,16 @@ void GetSymbolLevels(string symbol, SymbolLevels &levels)
    ArrayResize(g_SymbolLevels, count + 1);
    ArrayResize(g_maHandles, count + 1);
    ArrayResize(g_atrHandles, count + 1);
+   ArrayResize(g_adxHandles, count + 1);
 
    g_SymbolLevels[count].symbol = symbol;
    g_SymbolLevels[count].lastD1Time = 0;
    g_SymbolLevels[count].lastW1Time = 0;
 
-   // Cache iMA and iATR handles for this symbol
+   // Cache iMA, iATR, and iADX handles for this symbol
    g_maHandles[count] = iMA(symbol, PERIOD_D1, Trend_SMA_Period, 0, MODE_SMA, PRICE_CLOSE);
    g_atrHandles[count] = iATR(symbol, PERIOD_H1, ATR_Period);
+   g_adxHandles[count] = iADX(symbol, PERIOD_D1, ADX_Regime_Period);
 
    UpdateSymbolLevels(symbol, g_SymbolLevels[count]);
    levels = g_SymbolLevels[count];
@@ -167,6 +172,22 @@ int GetCachedATRHandle(string symbol)
    if(idx >= 0 && idx < ArraySize(g_atrHandles))
       return g_atrHandles[idx];
    return INVALID_HANDLE;
+}
+
+//+------------------------------------------------------------------+
+//| Get Cached ADX Value                                             |
+//+------------------------------------------------------------------+
+double GetADXValue(string symbol)
+{
+   int idx = GetSymbolIndex(symbol);
+   if(idx < 0) return -1.0;
+   int adxHandle = g_adxHandles[idx];
+   if(adxHandle == INVALID_HANDLE) return -1.0;
+   double adx[];
+   ArraySetAsSeries(adx, true);
+   if(CopyBuffer(adxHandle, MAIN_LINE, 1, 1, adx) <= 0)
+      return -1.0;
+   return adx[0];
 }
 
 //+------------------------------------------------------------------+
@@ -229,9 +250,10 @@ SignalResult CheckSignal(string symbol)
    double upperWick = high1 - MathMax(open1, close1);
    double lowerWick = MathMin(open1, close1) - low1;
 
-   // 4. Trend Filter Check
-   int trendBias = GetTrendBias(symbol);
-   if(trendBias == 0) return result;
+   // 4. Regime Filter Check
+   double adxValue = GetADXValue(symbol);
+   if(adxValue < 0) return result;              // data not ready
+   if(adxValue >= ADX_Max_Threshold) return result;  // too trending, skip
 
    // 5. Sweep & Rejection Detection
    bool isLowSweep = false;
@@ -239,49 +261,43 @@ SignalResult CheckSignal(string symbol)
    string sweptLevelName = "";
 
    // --- Bullish Setup (Low Sweep) ---
-   if(trendBias == 1) // Bullish bias -> LOW sweeps only
+   // Prioritize Weekly level (PWL) over Daily level (PDL)
+   if(low1 < levels.pwl && close1 > levels.pwl)
    {
-      // Prioritize Weekly level (PWL) over Daily level (PDL)
-      if(low1 < levels.pwl && close1 > levels.pwl)
-      {
-         isLowSweep = true;
-         sweptLevelName = "PWL";
-      }
-      else if(low1 < levels.pdl && close1 > levels.pdl)
-      {
-         isLowSweep = true;
-         sweptLevelName = "PDL";
-      }
+      isLowSweep = true;
+      sweptLevelName = "PWL";
+   }
+   else if(low1 < levels.pdl && close1 > levels.pdl)
+   {
+      isLowSweep = true;
+      sweptLevelName = "PDL";
+   }
 
-      if(isLowSweep)
-      {
-         // Rejection filter: Lower wick >= 2.0 * Body
-         bool isRejection = (lowerWick >= Rejection_Wick_Ratio * body);
-         if(!isRejection) isLowSweep = false;
-      }
+   if(isLowSweep)
+   {
+      // Rejection filter: Lower wick >= 2.0 * Body
+      bool isRejection = (lowerWick >= Rejection_Wick_Ratio * body);
+      if(!isRejection) isLowSweep = false;
    }
 
    // --- Bearish Setup (High Sweep) ---
-   if(trendBias == -1) // Bearish bias -> HIGH sweeps only
+   // Prioritize Weekly level (PWH) over Daily level (PDH)
+   if(high1 > levels.pwh && close1 < levels.pwh)
    {
-      // Prioritize Weekly level (PWH) over Daily level (PDH)
-      if(high1 > levels.pwh && close1 < levels.pwh)
-      {
-         isHighSweep = true;
-         sweptLevelName = "PWH";
-      }
-      else if(high1 > levels.pdh && close1 < levels.pdh)
-      {
-         isHighSweep = true;
-         sweptLevelName = "PDH";
-      }
+      isHighSweep = true;
+      sweptLevelName = "PWH";
+   }
+   else if(high1 > levels.pdh && close1 < levels.pdh)
+   {
+      isHighSweep = true;
+      sweptLevelName = "PDH";
+   }
 
-      if(isHighSweep)
-      {
-         // Rejection filter: Upper wick >= 2.0 * Body
-         bool isRejection = (upperWick >= Rejection_Wick_Ratio * body);
-         if(!isRejection) isHighSweep = false;
-      }
+   if(isHighSweep)
+   {
+      // Rejection filter: Upper wick >= 2.0 * Body
+      bool isRejection = (upperWick >= Rejection_Wick_Ratio * body);
+      if(!isRejection) isHighSweep = false;
    }
 
    // 6. Calculate ATR and Stop Distance if signal generated
@@ -345,10 +361,16 @@ void ReleaseSignalEngineHandles()
          IndicatorRelease(g_atrHandles[i]);
          g_atrHandles[i] = INVALID_HANDLE;
       }
+      if(i < ArraySize(g_adxHandles) && g_adxHandles[i] != INVALID_HANDLE)
+      {
+         IndicatorRelease(g_adxHandles[i]);
+         g_adxHandles[i] = INVALID_HANDLE;
+      }
    }
    ArrayResize(g_SymbolLevels, 0);
    ArrayResize(g_maHandles, 0);
    ArrayResize(g_atrHandles, 0);
+   ArrayResize(g_adxHandles, 0);
 }
 
 #endif
