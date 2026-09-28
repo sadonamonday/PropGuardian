@@ -15,6 +15,14 @@
 //| EA Input Parameters                                               |
 //+------------------------------------------------------------------+
 input double Rejection_Wick_Ratio     = 2.0;    // Wick-to-body ratio for rejection candle
+input int    Structure_Swing_Lookback_Bars = 8; // Completed W1 bars scanned for swing points
+input double Counter_Trend_Wick_Multiplier = 1.5; // Extra rejection strictness when trading against weekly structure
+input bool   Block_Counter_Trend_Entries   = false; // true = block counter-structure entries outright; false = require stricter rejection wick instead
+input int    CHoCH_M15_Swing_Lookback_Bars = 40;    // M15 bars scanned backward to locate the reference swing point
+input int    CHoCH_Max_Bars_Since_Break    = 8;     // Max M15 bars since the structural break for it to still count as a valid confirmation
+input bool   Use_M15_CHoCH_Filter          = false; // toggle: false = skip CHoCH check entirely (current default while testing reclaim entries)
+input double Stop_Entry_Buffer_Pips        = 2.0;   // Pips added beyond the sweep candle's extreme for the stop-order reclaim entry
+input int    Pending_Order_Expiry_Bars     = 4;     // H1 bars before an unfilled pending stop order is cancelled
 input int    Trend_SMA_Period         = 50;     // D1 Trend SMA period
 input int    ADX_Regime_Period        = 14;     // D1 ADX period
 input double ADX_Max_Threshold        = 30.0;   // block trades when ADX >= this
@@ -25,7 +33,7 @@ input double Partial_TP_RR                     = 4.0;   // R-multiple to trigger
 input double Partial_Volume_Pct                = 20.0;  // Partial TP volume percentage
 input double Partial2_TP_RR                    = 10.0;  // Second partial TP trigger (R-multiple)
 input double Partial2_Volume_Pct               = 50.0;  // Volume % of remaining position for second partial
-input double ATR_Trailing_Multiplier           = 3.0;   // Wide ATR multiplier for trailing stop (before partial 2)
+input double ATR_Trailing_Multiplier           = 2.5;   // Wide ATR multiplier for trailing stop (before partial 2)
 input double ATR_Trailing_Multiplier_Tight     = 1.6;   // Tight ATR multiplier for trailing stop (after partial 2)
 input int    GMT_Offset               = 2;      // Broker server offset from GMT (hours)
 input double Max_Asian_Range_Pips     = 50.0;   // Max Asian range in pips (00:00-05:00 GMT)
@@ -45,6 +53,13 @@ enum ENUM_SIGNAL_TYPE
    SIGNAL_NONE = 0,
    SIGNAL_BUY  = 1,
    SIGNAL_SELL = 2
+};
+
+enum ENUM_STRUCTURE_BIAS
+{
+   STRUCTURE_NEUTRAL   = 0,
+   STRUCTURE_UPTREND   = 1,
+   STRUCTURE_DOWNTREND = -1
 };
 
 struct SignalResult
@@ -74,6 +89,16 @@ static SymbolLevels g_SymbolLevels[];
 static int g_maHandles[];
 static int g_atrHandles[];
 static int g_adxHandles[];
+
+//+------------------------------------------------------------------+
+//| Helper: Pip size for a symbol (10x point on 3/5-digit symbols)    |
+//+------------------------------------------------------------------+
+double GetPipSizeForSymbol(string symbol)
+{
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   return point * ((digits == 3 || digits == 5) ? 10.0 : 1.0);
+}
 
 //+------------------------------------------------------------------+
 //| Helper: Check if symbol is in TradeableSymbols                    |
@@ -220,6 +245,159 @@ int GetTrendBias(string symbol)
 }
 
 //+------------------------------------------------------------------+
+//| Weekly Structure Bias — compares the two most recent W1 swing     |
+//| highs and two most recent W1 swing lows to determine whether      |
+//| price structure is making Higher-Highs/Higher-Lows (uptrend),     |
+//| Lower-Highs/Lower-Lows (downtrend), or neither (neutral).         |
+//| Swing points found via 3-bar fractal on completed W1 bars only    |
+//| (index 0, the current incomplete bar, is never used).             |
+//+------------------------------------------------------------------+
+ENUM_STRUCTURE_BIAS GetWeeklyStructureBias(string symbol)
+{
+   double swingHighs[2];
+   double swingLows[2];
+   int    highCount = 0;
+   int    lowCount  = 0;
+
+   int maxIndex = Structure_Swing_Lookback_Bars + 1;
+
+   for(int i = 2; i <= maxIndex && (highCount < 2 || lowCount < 2); i++)
+   {
+      double highMid  = iHigh(symbol, PERIOD_W1, i);
+      double highPrev = iHigh(symbol, PERIOD_W1, i - 1); // more recent neighbor
+      double highNext = iHigh(symbol, PERIOD_W1, i + 1); // older neighbor
+
+      if(highCount < 2 && highMid > highPrev && highMid > highNext)
+      {
+         swingHighs[highCount] = highMid;
+         highCount++;
+      }
+
+      double lowMid  = iLow(symbol, PERIOD_W1, i);
+      double lowPrev = iLow(symbol, PERIOD_W1, i - 1);
+      double lowNext = iLow(symbol, PERIOD_W1, i + 1);
+
+      if(lowCount < 2 && lowMid < lowPrev && lowMid < lowNext)
+      {
+         swingLows[lowCount] = lowMid;
+         lowCount++;
+      }
+   }
+
+   // Not enough swing points found in the lookback window
+   if(highCount < 2 || lowCount < 2)
+      return STRUCTURE_NEUTRAL;
+
+   // swingHighs[0]/swingLows[0] = most recent swing; [1] = the one before it
+   bool higherHigh = swingHighs[0] > swingHighs[1];
+   bool higherLow  = swingLows[0]  > swingLows[1];
+   bool lowerHigh  = swingHighs[0] < swingHighs[1];
+   bool lowerLow   = swingLows[0]  < swingLows[1];
+
+   if(higherHigh && higherLow) return STRUCTURE_UPTREND;
+   if(lowerHigh && lowerLow)   return STRUCTURE_DOWNTREND;
+
+   return STRUCTURE_NEUTRAL;
+}
+
+//+------------------------------------------------------------------+
+//| Find the most recent confirmed M15 swing high using a 2-bar       |
+//| fractal (2 bars on each side, strictly greater). Scans from the   |
+//| most recent completed bar (index 3, the earliest a 2-bar fractal  |
+//| can be confirmed) outward to CHoCH_M15_Swing_Lookback_Bars.       |
+//+------------------------------------------------------------------+
+bool FindM15SwingHigh(string symbol, int lookbackBars, double &outPrice, int &outIndex)
+{
+   for(int i = 3; i <= lookbackBars + 2; i++)
+   {
+      double hMid = iHigh(symbol, PERIOD_M15, i);
+      if(hMid > iHigh(symbol, PERIOD_M15, i - 1) &&
+         hMid > iHigh(symbol, PERIOD_M15, i - 2) &&
+         hMid > iHigh(symbol, PERIOD_M15, i + 1) &&
+         hMid > iHigh(symbol, PERIOD_M15, i + 2))
+      {
+         outPrice = hMid;
+         outIndex = i;
+         return true;
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Find the most recent confirmed M15 swing low — mirror of          |
+//| FindM15SwingHigh using strictly-lower comparisons.                 |
+//+------------------------------------------------------------------+
+bool FindM15SwingLow(string symbol, int lookbackBars, double &outPrice, int &outIndex)
+{
+   for(int i = 3; i <= lookbackBars + 2; i++)
+   {
+      double lMid = iLow(symbol, PERIOD_M15, i);
+      if(lMid < iLow(symbol, PERIOD_M15, i - 1) &&
+         lMid < iLow(symbol, PERIOD_M15, i - 2) &&
+         lMid < iLow(symbol, PERIOD_M15, i + 1) &&
+         lMid < iLow(symbol, PERIOD_M15, i + 2))
+      {
+         outPrice = lMid;
+         outIndex = i;
+         return true;
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| M15 Change of Character Confirmation                              |
+//| direction == SIGNAL_BUY:  requires a body-close M15 break ABOVE   |
+//|                           the most recent M15 swing high.         |
+//| direction == SIGNAL_SELL: requires a body-close M15 break BELOW   |
+//|                           the most recent M15 swing low.          |
+//| Returns true only if that break happened within the most recent   |
+//| CHoCH_Max_Bars_Since_Break completed M15 bars.                    |
+//+------------------------------------------------------------------+
+bool CheckM15CHoCHConfirms(string symbol, ENUM_SIGNAL_TYPE direction)
+{
+   if(direction == SIGNAL_BUY)
+   {
+      double swingHighPrice;
+      int    swingHighIndex;
+      if(!FindM15SwingHigh(symbol, CHoCH_M15_Swing_Lookback_Bars, swingHighPrice, swingHighIndex))
+         return false;
+
+      for(int j = swingHighIndex - 1; j >= 1; j--)
+      {
+         double closeJ = iClose(symbol, PERIOD_M15, j);
+         if(closeJ > swingHighPrice)
+         {
+            int barsSinceBreak = j;
+            return (barsSinceBreak <= CHoCH_Max_Bars_Since_Break);
+         }
+      }
+      return false;
+   }
+   else if(direction == SIGNAL_SELL)
+   {
+      double swingLowPrice;
+      int    swingLowIndex;
+      if(!FindM15SwingLow(symbol, CHoCH_M15_Swing_Lookback_Bars, swingLowPrice, swingLowIndex))
+         return false;
+
+      for(int j = swingLowIndex - 1; j >= 1; j--)
+      {
+         double closeJ = iClose(symbol, PERIOD_M15, j);
+         if(closeJ < swingLowPrice)
+         {
+            int barsSinceBreak = j;
+            return (barsSinceBreak <= CHoCH_Max_Bars_Since_Break);
+         }
+      }
+      return false;
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //| Core Signal Evaluation Function                                   |
 //| Evaluates completed H1 bar (index 1)                              |
 //+------------------------------------------------------------------+
@@ -250,10 +428,10 @@ SignalResult CheckSignal(string symbol)
    double upperWick = high1 - MathMax(open1, close1);
    double lowerWick = MathMin(open1, close1) - low1;
 
-   // 4. Regime Filter Check
+   // 4. Regime Filter Check (ADX) — block trades in strong trending conditions
    double adxValue = GetADXValue(symbol);
-   if(adxValue < 0) return result;              // data not ready
-   if(adxValue >= ADX_Max_Threshold) return result;  // too trending, skip
+   if(adxValue < 0) return result;          // indicator not ready
+   if(adxValue >= ADX_Max_Threshold) return result;
 
    // 5. Sweep & Rejection Detection
    bool isLowSweep = false;
@@ -275,29 +453,82 @@ SignalResult CheckSignal(string symbol)
 
    if(isLowSweep)
    {
-      // Rejection filter: Lower wick >= 2.0 * Body
       bool isRejection = (lowerWick >= Rejection_Wick_Ratio * body);
       if(!isRejection) isLowSweep = false;
    }
 
    // --- Bearish Setup (High Sweep) ---
    // Prioritize Weekly level (PWH) over Daily level (PDH)
-   if(high1 > levels.pwh && close1 < levels.pwh)
+   if(!isLowSweep)   // a bar shouldn't trigger both; low sweep takes priority if it fires
    {
-      isHighSweep = true;
-      sweptLevelName = "PWH";
-   }
-   else if(high1 > levels.pdh && close1 < levels.pdh)
-   {
-      isHighSweep = true;
-      sweptLevelName = "PDH";
+      if(high1 > levels.pwh && close1 < levels.pwh)
+      {
+         isHighSweep = true;
+         sweptLevelName = "PWH";
+      }
+      else if(high1 > levels.pdh && close1 < levels.pdh)
+      {
+         isHighSweep = true;
+         sweptLevelName = "PDH";
+      }
+
+      if(isHighSweep)
+      {
+         bool isRejection = (upperWick >= Rejection_Wick_Ratio * body);
+         if(!isRejection) isHighSweep = false;
+      }
    }
 
-   if(isHighSweep)
+   // 5b. Weekly Structure Filter — asymmetric counter-trend handling.
+   // A long that sweeps a low during confirmed weekly DOWNTREND structure,
+   // or a short that sweeps a high during confirmed weekly UPTREND structure,
+   // is a counter-structure entry. Depending on Block_Counter_Trend_Entries,
+   // it is either blocked outright or held to a stricter rejection-wick bar.
+   if(isLowSweep || isHighSweep)
    {
-      // Rejection filter: Upper wick >= 2.0 * Body
-      bool isRejection = (upperWick >= Rejection_Wick_Ratio * body);
-      if(!isRejection) isHighSweep = false;
+      ENUM_STRUCTURE_BIAS structureBias = GetWeeklyStructureBias(symbol);
+
+      if(isLowSweep && structureBias == STRUCTURE_DOWNTREND)
+      {
+         if(Block_Counter_Trend_Entries)
+         {
+            isLowSweep = false;
+         }
+         else
+         {
+            bool passesStrictRejection = (lowerWick >= Rejection_Wick_Ratio * Counter_Trend_Wick_Multiplier * body);
+            if(!passesStrictRejection) isLowSweep = false;
+         }
+      }
+
+      if(isHighSweep && structureBias == STRUCTURE_UPTREND)
+      {
+         if(Block_Counter_Trend_Entries)
+         {
+            isHighSweep = false;
+         }
+         else
+         {
+            bool passesStrictRejection = (upperWick >= Rejection_Wick_Ratio * Counter_Trend_Wick_Multiplier * body);
+            if(!passesStrictRejection) isHighSweep = false;
+         }
+      }
+   }
+
+   // 5c. M15 CHoCH Confirmation Filter — disabled by default (Use_M15_CHoCH_Filter)
+   // while the stop-order reclaim entry is tested on its own.
+   if(Use_M15_CHoCH_Filter)
+   {
+      if(isLowSweep)
+      {
+         if(!CheckM15CHoCHConfirms(symbol, SIGNAL_BUY))
+            isLowSweep = false;
+      }
+      if(isHighSweep)
+      {
+         if(!CheckM15CHoCHConfirms(symbol, SIGNAL_SELL))
+            isHighSweep = false;
+      }
    }
 
    // 6. Calculate ATR and Stop Distance if signal generated
@@ -318,13 +549,19 @@ SignalResult CheckSignal(string symbol)
 
       if(atrValue <= 0) return result;
 
-      double stopDist = atrValue * SL_ATR_Multiplier;
+      double spread = SymbolInfoDouble(symbol, SYMBOL_ASK) - SymbolInfoDouble(symbol, SYMBOL_BID);
+      double stopDist = (atrValue * SL_ATR_Multiplier) + spread;
+
+      double pipSize     = GetPipSizeForSymbol(symbol);
+      double entryBuffer = Stop_Entry_Buffer_Pips * pipSize;
 
       if(isLowSweep)
       {
+         // Reclaim entry: price must trade back up through the sweep bar's
+         // high (plus buffer) before the buy triggers — confirms momentum
+         // has actually resumed, rather than entering on the sweep bar itself.
          result.type = SIGNAL_BUY;
-         result.entryPrice = SymbolInfoDouble(symbol, SYMBOL_ASK);
-         if(result.entryPrice <= 0) result.entryPrice = close1;
+         result.entryPrice = high1 + entryBuffer;
          result.slPrice = result.entryPrice - stopDist;
          result.stopDistance = stopDist;
          result.levelSwept = sweptLevelName;
@@ -332,8 +569,7 @@ SignalResult CheckSignal(string symbol)
       else if(isHighSweep)
       {
          result.type = SIGNAL_SELL;
-         result.entryPrice = SymbolInfoDouble(symbol, SYMBOL_BID);
-         if(result.entryPrice <= 0) result.entryPrice = close1;
+         result.entryPrice = low1 - entryBuffer;
          result.slPrice = result.entryPrice + stopDist;
          result.stopDistance = stopDist;
          result.levelSwept = sweptLevelName;

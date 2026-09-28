@@ -16,6 +16,8 @@ input int Magic_Number = 20260914;   // for order tagging/log filtering
 // Global State
 RiskState       g_riskState;
 PositionTracker g_tracker;     // ticket == 0 means "no open position"
+ulong           g_pendingOrderTicket     = 0;   // 0 means no pending stop order active
+datetime        g_pendingOrderExpiryTime = 0;
 
 //+------------------------------------------------------------------+
 //| Expert Initialization Function                                    |
@@ -26,6 +28,8 @@ int OnInit()
    g_riskState.equityPeak            = AccountInfoDouble(ACCOUNT_EQUITY);
    g_riskState.dailyReferenceBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_tracker.ticket                  = 0;
+   g_pendingOrderTicket              = 0;
+   g_pendingOrderExpiryTime          = 0;
 
    EventSetTimer(5);
    return(INIT_SUCCEEDED);
@@ -82,9 +86,47 @@ void OnTimer()
          CheckFridayClose(g_tracker);
       }
    }
+   else if(g_pendingOrderTicket > 0)
+   {
+      // 4. A pending stop order is waiting for price to reclaim — no new
+      // scanning while it's active. Safety-net expiry check in case the
+      // broker doesn't auto-cancel on ORDER_TIME_SPECIFIED.
+   if(TimeCurrent() >= g_pendingOrderExpiryTime)
+      {
+         bool clearPending = true;
+
+         if(OrderSelect(g_pendingOrderTicket))
+         {
+            MqlTradeRequest delRequest;
+            MqlTradeResult  delResult;
+            ZeroMemory(delRequest);
+            ZeroMemory(delResult);
+            delRequest.action = TRADE_ACTION_REMOVE;
+            delRequest.order  = g_pendingOrderTicket;
+
+            if(OrderSend(delRequest, delResult) && delResult.retcode == TRADE_RETCODE_DONE)
+            {
+               PrintFormat("[PENDING] Manually cancelled expired order #%d", g_pendingOrderTicket);
+            }
+            else
+            {
+               // Cancel failed: keep tracking the order and retry on the next timer tick
+               PrintFormat("[ERROR] Failed to cancel expired order #%d: retcode %d",
+                           g_pendingOrderTicket, delResult.retcode);
+               clearPending = false;
+            }
+         }
+
+         if(clearPending)
+         {
+            g_pendingOrderTicket     = 0;
+            g_pendingOrderExpiryTime = 0;
+         }
+      }
+   }
    else
    {
-      // 4. Scan for new trade opportunities (no open position)
+      // 5. Scan for new trade opportunities (no open position, no pending order)
       static datetime lastBarTimes[5] = {0, 0, 0, 0, 0};
 
       for(int i = 0; i < 5; i++)
@@ -103,38 +145,43 @@ void OnTimer()
             if(lots <= 0)
                continue;
 
+            int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+
             MqlTradeRequest request;
             MqlTradeResult  result;
             ZeroMemory(request);
             ZeroMemory(result);
 
-            request.action       = TRADE_ACTION_DEAL;
+            request.action       = TRADE_ACTION_PENDING;
             request.symbol       = symbol;
             request.volume       = lots;
-            request.type         = (signal.type == SIGNAL_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-            request.price        = signal.entryPrice;
-            request.sl           = signal.slPrice;
+            request.type         = (signal.type == SIGNAL_BUY) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+            request.price        = NormalizeDouble(signal.entryPrice, digits);
+            request.sl           = NormalizeDouble(signal.slPrice, digits);
             request.tp           = 0.0;
             request.deviation    = 10;
             request.magic        = Magic_Number;
             request.type_filling = GetSupportedFillingMode(symbol);
+            request.type_time    = ORDER_TIME_SPECIFIED;
+            request.expiration   = TimeCurrent() + (Pending_Order_Expiry_Bars * PeriodSeconds(PERIOD_H1));
 
             if(OrderSend(request, result))
             {
-               if(result.retcode == TRADE_RETCODE_DONE)
+               if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
                {
-                  InitPositionTracker(g_tracker, result.order, signal.stopDistance, signal.slPrice, 0.0);
+                  g_pendingOrderTicket     = result.order;
+                  g_pendingOrderExpiryTime = request.expiration;
                   g_riskState.tradesToday++;
                   break;
                }
                else
                {
-                  PrintFormat("[ERROR] OrderSend failed for %s: retcode %d", symbol, result.retcode);
+                  PrintFormat("[ERROR] Pending OrderSend failed for %s: retcode %d", symbol, result.retcode);
                }
             }
             else
             {
-               PrintFormat("[ERROR] OrderSend execution error for %s: retcode %d", symbol, result.retcode);
+               PrintFormat("[ERROR] Pending OrderSend execution error for %s: retcode %d", symbol, result.retcode);
             }
          }
       }
@@ -148,6 +195,50 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
 {
+   // --- Pending order triggered: detect the resulting position ---
+   if(g_pendingOrderTicket > 0 && trans.type == TRADE_TRANSACTION_DEAL_ADD)
+   {
+      ulong dealTicket = trans.deal;
+      if(dealTicket > 0 && HistoryDealSelect(dealTicket))
+      {
+         long dealOrder = HistoryDealGetInteger(dealTicket, DEAL_ORDER);
+         long dealEntry = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+
+         if(dealOrder == (long)g_pendingOrderTicket && dealEntry == DEAL_ENTRY_IN)
+         {
+            long positionId = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+
+            if(positionId > 0 && PositionSelectByTicket((ulong)positionId))
+            {
+               double actualOpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+               double actualSL        = PositionGetDouble(POSITION_SL);
+               double actualDistance  = MathAbs(actualOpenPrice - actualSL);
+
+               InitPositionTracker(g_tracker, (ulong)positionId, actualDistance, actualSL, 0.0);
+               PrintFormat("[FILL] Pending order #%d triggered — position #%d opened at %.5f, SL %.5f",
+                           g_pendingOrderTicket, (ulong)positionId, actualOpenPrice, actualSL);
+            }
+
+            g_pendingOrderTicket     = 0;
+            g_pendingOrderExpiryTime = 0;
+            return;
+         }
+      }
+   }
+
+   // --- Pending order removed (cancelled, expired, or rejected) without filling ---
+   if(g_pendingOrderTicket > 0 && trans.type == TRADE_TRANSACTION_ORDER_DELETE)
+   {
+      if(trans.order == g_pendingOrderTicket)
+      {
+         PrintFormat("[PENDING] Order #%d removed without filling (expired/cancelled)", g_pendingOrderTicket);
+         g_pendingOrderTicket     = 0;
+         g_pendingOrderExpiryTime = 0;
+         return;
+      }
+   }
+
+   // --- Existing position close-detection logic (unchanged) ---
    if(g_tracker.ticket == 0) return;
 
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
