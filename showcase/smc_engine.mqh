@@ -438,10 +438,12 @@ ENUM_SMC_STRUCTURE GetTimeframeStructure(string symbol, ENUM_TIMEFRAMES tf, int 
 }
 
 //+------------------------------------------------------------------+
-//| 4H POI PROVIDER INTERFACE & REGISTRATION                         |
-//| Implementation Limitation: Arbitrary ±point zones removed.       |
-//| Valid 4H POIs must be explicitly provided/registered by a        |
-//| verified POI provider engine. If no POI exists: NO TRADE.        |
+//| 4H POI DETECTION & REGISTRATION                                  |
+//| Bullish/Bearish Order Blocks & FVGs have EQUAL status.          |
+//| Direction filtering: must agree with 4H structural direction.   |
+//| Selection: Most recent valid, uninvalidated POI.                 |
+//| Activation: M15 bar range [Low, High] intersects POI range.      |
+//| Invalidation: OB: 4H close beyond extreme; FVG: close through C1 |
 //+------------------------------------------------------------------+
 
 static SMCPOI g_Registered4HPOIs[];
@@ -468,11 +470,175 @@ void ClearRegistered4HPOIs()
    ArrayFree(g_Registered4HPOIs);
 }
 
+// Detect 4H Fair Value Gap at bar index c3BarIndex
+bool Find4HFVG(string symbol, int c3BarIndex, SMCPOI &outPOI)
+{
+   ZeroMemory(outPOI);
+
+   if(c3BarIndex < 1) return false;
+   int c1BarIndex = c3BarIndex + 2;
+
+   double highC1 = iHigh(symbol, SMC_4H_Timeframe, c1BarIndex);
+   double lowC1  = iLow(symbol, SMC_4H_Timeframe, c1BarIndex);
+
+   double highC3 = iHigh(symbol, SMC_4H_Timeframe, c3BarIndex);
+   double lowC3  = iLow(symbol, SMC_4H_Timeframe, c3BarIndex);
+
+   if(highC1 == 0 || lowC3 == 0) return false;
+
+   // Bullish FVG: Low(C3) > High(C1)
+   if(lowC3 > highC1)
+   {
+      outPOI.type      = POI_TYPE_DEMAND;
+      outPOI.bottom    = highC1;
+      outPOI.top       = lowC3;
+      outPOI.time      = iTime(symbol, SMC_4H_Timeframe, c3BarIndex);
+      outPOI.timeframe = SMC_4H_Timeframe;
+      outPOI.isActive  = true;
+
+      // Invalidation check: completed 4H candle closed through C1 boundary (below bottom)
+      for(int k = c3BarIndex - 1; k >= 1; k--)
+      {
+         double cl = iClose(symbol, SMC_4H_Timeframe, k);
+         if(cl > 0 && cl < outPOI.bottom)
+         {
+            outPOI.isActive = false;
+            return false;
+         }
+      }
+      return true;
+   }
+   // Bearish FVG: High(C3) < Low(C1)
+   else if(highC3 < lowC1)
+   {
+      outPOI.type      = POI_TYPE_SUPPLY;
+      outPOI.bottom    = highC3;
+      outPOI.top       = lowC1;
+      outPOI.time      = iTime(symbol, SMC_4H_Timeframe, c3BarIndex);
+      outPOI.timeframe = SMC_4H_Timeframe;
+      outPOI.isActive  = true;
+
+      // Invalidation check: completed 4H candle closed through C1 boundary (above top)
+      for(int k = c3BarIndex - 1; k >= 1; k--)
+      {
+         double cl = iClose(symbol, SMC_4H_Timeframe, k);
+         if(cl > 0 && cl > outPOI.top)
+         {
+            outPOI.isActive = false;
+            return false;
+         }
+      }
+      return true;
+   }
+
+   return false;
+}
+
+// Detect 4H Order Block at bar index obBarIndex
+bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
+{
+   ZeroMemory(outPOI);
+
+   if(obBarIndex < 1) return false;
+
+   double openOB  = iOpen(symbol, SMC_4H_Timeframe, obBarIndex);
+   double closeOB = iClose(symbol, SMC_4H_Timeframe, obBarIndex);
+   double highOB  = iHigh(symbol, SMC_4H_Timeframe, obBarIndex);
+   double lowOB   = iLow(symbol, SMC_4H_Timeframe, obBarIndex);
+
+   if(openOB == 0 || closeOB == 0) return false;
+
+   // Bullish OB: final down-close candle before qualifying bullish displacement (producing FVG & BOS/CHoCH)
+   if(closeOB < openOB)
+   {
+      bool hasFVG = false;
+      bool hasBOS = false;
+
+      for(int k = obBarIndex - 1; k >= 1; k--)
+      {
+         double high1 = iHigh(symbol, SMC_4H_Timeframe, k + 2);
+         double low3  = iLow(symbol, SMC_4H_Timeframe, k);
+         if(low3 > high1) hasFVG = true;
+
+         SMCSwing prevHigh;
+         if(Get5BarSwingHigh(symbol, SMC_4H_Timeframe, k + 2, prevHigh))
+         {
+            if(iClose(symbol, SMC_4H_Timeframe, k) > prevHigh.price) hasBOS = true;
+         }
+      }
+
+      if(!hasFVG || !hasBOS) return false;
+
+      outPOI.type      = POI_TYPE_DEMAND;
+      outPOI.bottom    = lowOB;
+      outPOI.top       = highOB;
+      outPOI.time      = iTime(symbol, SMC_4H_Timeframe, obBarIndex);
+      outPOI.timeframe = SMC_4H_Timeframe;
+      outPOI.isActive  = true;
+
+      // Invalidation check: completed 4H candle closed below OB low (bottom)
+      for(int k = obBarIndex - 1; k >= 1; k--)
+      {
+         double cl = iClose(symbol, SMC_4H_Timeframe, k);
+         if(cl > 0 && cl < outPOI.bottom)
+         {
+            outPOI.isActive = false;
+            return false;
+         }
+      }
+      return true;
+   }
+   // Bearish OB: final up-close candle before qualifying bearish displacement (producing FVG & BOS/CHoCH)
+   else if(closeOB > openOB)
+   {
+      bool hasFVG = false;
+      bool hasBOS = false;
+
+      for(int k = obBarIndex - 1; k >= 1; k--)
+      {
+         double low1  = iLow(symbol, SMC_4H_Timeframe, k + 2);
+         double high3 = iHigh(symbol, SMC_4H_Timeframe, k);
+         if(high3 < low1) hasFVG = true;
+
+         SMCSwing prevLow;
+         if(Get5BarSwingLow(symbol, SMC_4H_Timeframe, k + 2, prevLow))
+         {
+            if(iClose(symbol, SMC_4H_Timeframe, k) < prevLow.price) hasBOS = true;
+         }
+      }
+
+      if(!hasFVG || !hasBOS) return false;
+
+      outPOI.type      = POI_TYPE_SUPPLY;
+      outPOI.bottom    = lowOB;
+      outPOI.top       = highOB;
+      outPOI.time      = iTime(symbol, SMC_4H_Timeframe, obBarIndex);
+      outPOI.timeframe = SMC_4H_Timeframe;
+      outPOI.isActive  = true;
+
+      // Invalidation check: completed 4H candle closed above OB high (top)
+      for(int k = obBarIndex - 1; k >= 1; k--)
+      {
+         double cl = iClose(symbol, SMC_4H_Timeframe, k);
+         if(cl > 0 && cl > outPOI.top)
+         {
+            outPOI.isActive = false;
+            return false;
+         }
+      }
+      return true;
+   }
+
+   return false;
+}
+
+// Get the most recent valid, uninvalidated 4H POI agreeing with 4H structural direction
 bool GetActive4HPOI(string symbol, SMCPOI &outPOI)
 {
    ZeroMemory(outPOI);
    outPOI.isActive = false;
 
+   // 1. Check registered POIs first
    int total = ArraySize(g_Registered4HPOIs);
    for(int i = 0; i < total; i++)
    {
@@ -483,11 +649,55 @@ bool GetActive4HPOI(string symbol, SMCPOI &outPOI)
       }
    }
 
-   // If no verified production 4H POI is provided, return false (NO TRADE).
+   // 2. Check 4H structural direction
+   ENUM_SMC_STRUCTURE structure4H = GetTimeframeStructure(symbol, SMC_4H_Timeframe, 50);
+   if(structure4H == SMC_STRUCTURE_UNDEFINED) return false;
+
+   // 3. Scan 4H bars for most recent valid, uninvalidated POI (OB and FVG have EQUAL status)
+   SMCPOI newestPOI;
+   ZeroMemory(newestPOI);
+   datetime newestTime = 0;
+
+   for(int i = 1; i <= 50; i++)
+   {
+      // Check 4H FVG
+      SMCPOI fvgPOI;
+      if(Find4HFVG(symbol, i, fvgPOI))
+      {
+         bool matchesDir = (structure4H == SMC_STRUCTURE_BULLISH && fvgPOI.type == POI_TYPE_DEMAND) ||
+                           (structure4H == SMC_STRUCTURE_BEARISH && fvgPOI.type == POI_TYPE_SUPPLY);
+         if(matchesDir && fvgPOI.time > newestTime)
+         {
+            newestPOI = fvgPOI;
+            newestTime = fvgPOI.time;
+         }
+      }
+
+      // Check 4H OB
+      SMCPOI obPOI;
+      if(Find4HOrderBlock(symbol, i, obPOI))
+      {
+         bool matchesDir = (structure4H == SMC_STRUCTURE_BULLISH && obPOI.type == POI_TYPE_DEMAND) ||
+                           (structure4H == SMC_STRUCTURE_BEARISH && obPOI.type == POI_TYPE_SUPPLY);
+         if(matchesDir && obPOI.time > newestTime)
+         {
+            newestPOI = obPOI;
+            newestTime = obPOI.time;
+         }
+      }
+
+      // If a valid POI exists at bar i, return it immediately as it is the most recent
+      if(newestTime > 0)
+      {
+         outPOI = newestPOI;
+         return true;
+      }
+   }
+
    return false;
 }
 
-// Check if M15 price is interacting with (entering/touching) 4H POI
+// Check if completed M15 candle intersects 4H POI
 bool IsPriceIn4HPOI(string symbol, const SMCPOI &poi)
 {
    if(!poi.isActive) return false;
@@ -553,11 +763,13 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
 //| CHoCH SWING SELECTION & DETECTION                                |
 //| Bullish CHoCH:                                                   |
 //|   Start from final bearish extreme/sweep.                        |
-//|   Search backward for MOST RECENT confirmed M15 swing high.      |
+//|   Search backward for confirmed M15 Lower High that directly     |
+//|   originated the final downward leg into the sweep low.          |
 //|   Completed M15 candle BODY CLOSES above that Lower High.        |
 //| Bearish CHoCH:                                                   |
 //|   Start from final bullish extreme/sweep.                        |
-//|   Search backward for MOST RECENT confirmed M15 swing low.       |
+//|   Search backward for confirmed M15 Higher Low that directly     |
+//|   preceded the final upward leg into the sweep high.             |
 //|   Completed M15 candle BODY CLOSES below that Higher Low.        |
 //+------------------------------------------------------------------+
 
@@ -568,14 +780,12 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
    int sweepBar = iBarShift(symbol, SMC_M15_Timeframe, sweepTime, false);
    if(sweepBar < 0) sweepBar = 3;
 
-   // Start searching from the sweep bar into the past to locate the opposing swing
-   // immediately preceding the final directional leg into the sweep extreme.
    int startBar = MathMax(3, sweepBar);
    int maxLookback = startBar + 60;
 
    if(direction == SIGNAL_BUY)
    {
-      // Traverse backward from sweep extreme to find the most recent confirmed Lower High preceding the final bearish leg
+      // Traverse backward from sweep extreme to find the confirmed Lower High originating the final downward leg
       for(int i = startBar; i <= maxLookback; i++)
       {
          SMCSwing swing;
@@ -591,7 +801,7 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
    }
    else if(direction == SIGNAL_SELL)
    {
-      // Traverse backward from sweep extreme to find the most recent confirmed Higher Low preceding the final bullish leg
+      // Traverse backward from sweep extreme to find the confirmed Higher Low preceding the final upward leg
       for(int i = startBar; i <= maxLookback; i++)
       {
          SMCSwing swing;
@@ -628,20 +838,23 @@ bool CheckM15CHoCH(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &ch
 }
 
 //+------------------------------------------------------------------+
-//| M5 FVG & DISPLACEMENT DETECTION                                  |
+//| M5 DISPLACEMENT & FVG DETECTION (TIED TO DISPLACEMENT EVENT)     |
 //| 3-candle structure on M5:                                        |
-//|   Bullish FVG: Low(Candle 3) > High(Candle 1)                    |
-//|   Bearish FVG: High(Candle 3) < Low(Candle 1)                    |
+//|   Bullish: Close[1] > Open[1], Close[1] > SwingHigh, Low(C3) > High(C1)|
+//|   Bearish: Close[1] < Open[1], Close[1] < SwingLow, High(C3) < Low(C1)|
 //| Midpoint calculation = (Top + Bottom) / 2                        |
 //| Invalidation: Body close beyond Candle 1 boundary                |
 //+------------------------------------------------------------------+
 
-bool FindM5FVG(string symbol, ENUM_SIGNAL_TYPE direction, SMCFVG &outFVG)
+bool CheckM5DisplacementAndFVG(string symbol, ENUM_SIGNAL_TYPE direction, SMCSwing &outM5Swing, SMCFVG &outFVG)
 {
+   ZeroMemory(outM5Swing);
    ZeroMemory(outFVG);
    outFVG.isValid = false;
 
-   // Candle 3 is index 1 (most recent completed candle), Candle 2 is index 2, Candle 1 is index 3
+   double open1  = iOpen(symbol, SMC_M5_Timeframe, 1);
+   double close1 = iClose(symbol, SMC_M5_Timeframe, 1);
+
    double highC1 = iHigh(symbol, SMC_M5_Timeframe, 3);
    double lowC1  = iLow(symbol, SMC_M5_Timeframe, 3);
 
@@ -650,37 +863,55 @@ bool FindM5FVG(string symbol, ENUM_SIGNAL_TYPE direction, SMCFVG &outFVG)
 
    if(direction == SIGNAL_BUY)
    {
-      if(lowC3 > highC1)
-      {
-         outFVG.isBullish   = true;
-         outFVG.bottom      = highC1;
-         outFVG.top         = lowC3;
-         outFVG.midpoint    = (outFVG.top + outFVG.bottom) / 2.0;
-         outFVG.timeC3      = iTime(symbol, SMC_M5_Timeframe, 1);
-         outFVG.c1Index     = 3;
-         outFVG.c2Index     = 2;
-         outFVG.c3Index     = 1;
-         outFVG.isValid     = true;
-         outFVG.isMitigated = false;
-         return true;
-      }
+      // 1. Breakout candle must be directionally bullish (Close > Open)
+      if(close1 <= open1) return false;
+
+      // 2. Body close above latest confirmed M5 swing high
+      SMCSwing m5High;
+      if(!FindMostRecentSwingHigh(symbol, SMC_M5_Timeframe, 30, m5High)) return false;
+      if(close1 <= m5High.price) return false;
+
+      // 3. Qualifying bullish FVG created by displacement sequence (Low(C3) > High(C1))
+      if(lowC3 <= highC1) return false;
+
+      outM5Swing         = m5High;
+      outFVG.isBullish   = true;
+      outFVG.bottom      = highC1;
+      outFVG.top         = lowC3;
+      outFVG.midpoint    = (outFVG.top + outFVG.bottom) / 2.0;
+      outFVG.timeC3      = iTime(symbol, SMC_M5_Timeframe, 1);
+      outFVG.c1Index     = 3;
+      outFVG.c2Index     = 2;
+      outFVG.c3Index     = 1;
+      outFVG.isValid     = true;
+      outFVG.isMitigated = false;
+      return true;
    }
    else if(direction == SIGNAL_SELL)
    {
-      if(highC3 < lowC1)
-      {
-         outFVG.isBullish   = false;
-         outFVG.bottom      = highC3;
-         outFVG.top         = lowC1;
-         outFVG.midpoint    = (outFVG.top + outFVG.bottom) / 2.0;
-         outFVG.timeC3      = iTime(symbol, SMC_M5_Timeframe, 1);
-         outFVG.c1Index     = 3;
-         outFVG.c2Index     = 2;
-         outFVG.c3Index     = 1;
-         outFVG.isValid     = true;
-         outFVG.isMitigated = false;
-         return true;
-      }
+      // 1. Breakout candle must be directionally bearish (Close < Open)
+      if(close1 >= open1) return false;
+
+      // 2. Body close below latest confirmed M5 swing low
+      SMCSwing m5Low;
+      if(!FindMostRecentSwingLow(symbol, SMC_M5_Timeframe, 30, m5Low)) return false;
+      if(close1 >= m5Low.price) return false;
+
+      // 3. Qualifying bearish FVG created by displacement sequence (High(C3) < Low(C1))
+      if(highC3 >= lowC1) return false;
+
+      outM5Swing         = m5Low;
+      outFVG.isBullish   = false;
+      outFVG.bottom      = highC3;
+      outFVG.top         = lowC1;
+      outFVG.midpoint    = (outFVG.top + outFVG.bottom) / 2.0;
+      outFVG.timeC3      = iTime(symbol, SMC_M5_Timeframe, 1);
+      outFVG.c1Index     = 3;
+      outFVG.c2Index     = 2;
+      outFVG.c3Index     = 1;
+      outFVG.isValid     = true;
+      outFVG.isMitigated = false;
+      return true;
    }
 
    return false;
@@ -768,47 +999,6 @@ int CountActiveSetups()
    return count;
 }
 
-// Structural displacement proxy: directional M5 breakout candle + qualifying FVG.
-// Check M5 execution structure break (BODY close beyond M5 swing AND directionally matching candle)
-bool CheckM5ExecutionBreak(string symbol, ENUM_SIGNAL_TYPE direction, SMCSwing &outM5Swing)
-{
-   ZeroMemory(outM5Swing);
-   double open1  = iOpen(symbol, SMC_M5_Timeframe, 1);
-   double close1 = iClose(symbol, SMC_M5_Timeframe, 1);
-
-   if(direction == SIGNAL_BUY)
-   {
-      // Breakout candle must be directionally bullish (Close > Open)
-      if(close1 <= open1) return false;
-
-      SMCSwing m5High;
-      if(FindMostRecentSwingHigh(symbol, SMC_M5_Timeframe, 30, m5High))
-      {
-         if(close1 > m5High.price)
-         {
-            outM5Swing = m5High;
-            return true;
-         }
-      }
-   }
-   else if(direction == SIGNAL_SELL)
-   {
-      // Breakout candle must be directionally bearish (Close < Open)
-      if(close1 >= open1) return false;
-
-      SMCSwing m5Low;
-      if(FindMostRecentSwingLow(symbol, SMC_M5_Timeframe, 30, m5Low))
-      {
-         if(close1 < m5Low.price)
-         {
-            outM5Swing = m5Low;
-            return true;
-         }
-      }
-   }
-   return false;
-}
-
 // Manage lifecycle for a specific setup on a symbol
 void ProcessSMCSetupStateMachine(SMCSetup &setup)
 {
@@ -878,7 +1068,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          }
          else
          {
-            // If no valid preceding swing found within 24 hours, invalidate
+            // If no preceding swing found within 24 hours, invalidate
             if(now - setup.sweepTime > 86400)
                InvalidateSetup(setup, "No preceding M15 swing found for CHoCH");
          }
@@ -907,10 +1097,11 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_WAITING_FOR_M5_CONFIRMATION:
       {
-         // Check M5 execution structure break (M5 BOS body close)
          SMCSwing m5Swing;
-         if(CheckM5ExecutionBreak(symbol, setup.direction, m5Swing))
+         SMCFVG fvg;
+         if(CheckM5DisplacementAndFVG(symbol, setup.direction, m5Swing, fvg))
          {
+            setup.m5FVG = fvg;
             setup.state = SMC_M5_CONFIRMATION;
          }
          break;
@@ -918,11 +1109,18 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_M5_CONFIRMATION:
       {
-         SMCFVG fvg;
-         if(FindM5FVG(symbol, setup.direction, fvg))
+         if(setup.m5FVG.isValid)
          {
-            setup.m5FVG = fvg;
             setup.state = SMC_FVG_DETECTED;
+         }
+         else
+         {
+            SMCFVG fvg;
+            if(FindM5FVG(symbol, setup.direction, fvg))
+            {
+               setup.m5FVG = fvg;
+               setup.state = SMC_FVG_DETECTED;
+            }
          }
          break;
       }
@@ -948,7 +1146,15 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          if(setup.direction == SIGNAL_BUY)
          {
             if(FindMostRecentSwingHigh(symbol, SMC_M15_Timeframe, 50, oppSwing))
-               setup.tpPrice = oppSwing.price;
+            {
+               if(oppSwing.price > setup.entryPrice)
+                  setup.tpPrice = oppSwing.price;
+               else
+               {
+                  InvalidateSetup(setup, "Opposing M15 structural high target is not ahead of entry price");
+                  break;
+               }
+            }
             else
             {
                InvalidateSetup(setup, "No valid opposing M15 structural high target found for TP");
@@ -958,7 +1164,15 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          else
          {
             if(FindMostRecentSwingLow(symbol, SMC_M15_Timeframe, 50, oppSwing))
-               setup.tpPrice = oppSwing.price;
+            {
+               if(oppSwing.price < setup.entryPrice)
+                  setup.tpPrice = oppSwing.price;
+               else
+               {
+                  InvalidateSetup(setup, "Opposing M15 structural low target is not ahead of entry price");
+                  break;
+               }
+            }
             else
             {
                InvalidateSetup(setup, "No valid opposing M15 structural low target found for TP");
