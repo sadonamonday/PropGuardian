@@ -1,94 +1,64 @@
 # PropGuardian SMC Strategy v0.1 — Implementation Audit & Architecture Report
 
 ## 1. Overview
-This report documents the architectural audit of the PropGuardian MT5 Expert Advisor codebase and defines the precise integration strategy for the new **PropGuardian SMC Strategy v0.1**.
+This report documents the architectural audit of the PropGuardian MT5 Expert Advisor codebase and defines the precise integration strategy for the **PropGuardian SMC Strategy v0.1**.
 
-The goal is to transition PropGuardian to a deterministic, testable, multi-timeframe Smart Money Concepts (SMC) execution model based on **4H context → M15 liquidity sweep & CHoCH → M5 displacement & FVG → 50% FVG limit order entry**, while strictly preserving all non-conflicting capital protection and risk management layers.
+The strategy implements a deterministic, multi-timeframe Smart Money Concepts (SMC) execution model:
+**4H context/POI → M15 liquidity sweep & CHoCH → M5 execution structure, displacement & FVG → 50% FVG limit order entry**, while strictly preserving all non-conflicting capital protection and risk management layers.
 
 ---
 
 ## 2. Codebase Structure & File Classification
 
-| File | Classification | Status & Purpose |
+| File | Classification | Purpose & Implementation Status |
 | :--- | :--- | :--- |
-| `showcase/PropGuardian.mq5` | Production / EA Entry | Core EA lifecycle (`OnInit`, `OnDeinit`, `OnTimer`, `OnTradeTransaction`). Standard entry point. |
-| `showcase/signal_engine.mqh` | Production / Signal Module | Previous H1 PWH/PWL/PDH/PDL sweep signal logic. Will be augmented / wrapped by the new SMC strategy engine (`smc_engine.mqh`). |
-| `showcase/risk_manager.mqh` | Production / Risk Protection | Multi-layer pre-trade risk gates, drawdown monitors, daily reset, circuit breaker, lot sizer. **RETAINED IN FULL**. |
-| `showcase/safety_filters.mqh` | Production / Safety Filters | Pre-trade blocking conditions (spread, trading session, news stub, rollover, toxic volatility, cooldown). **RETAINED IN FULL**. |
-| `showcase/position_manager.mqh` | Production / Position Mgmt | Active trade management (stealth SL/TP, break-even, partial TPs, ATR trailing, Friday close). **INTEGRATED & RETAINED**. |
-| `showcase/PropGuardian.ex5` | Build Artifact | Compiled output. Will be regenerated or updated upon MQL5 build. |
-| `scripts/deploy_vps.sh` | Infrastructure Script | VPS deployment automation. RETAINED. |
-| `scripts/health_check.sh` | Infrastructure Script | Monitoring dashboard script. RETAINED. |
-| `logs/sample_production.log` | Documentation / Evidence | Production log example. RETAINED. |
+| `showcase/PropGuardian.mq5` | Production / EA Entry | Main EA entry point (`OnInit`, `OnDeinit`, `OnTimer`, `OnTradeTransaction`). Integrates SMC engine timer tick, pending limit order submission, and deal fill/close tracking. Legacy H1 scanner disabled. |
+| `showcase/smc_engine.mqh` | Production / Signal Engine | Core SMC engine. Houses 4H/M15 5-bar swing & M5 3-bar swing detectors, 4H POI state, M15 liquidity sweep & CHoCH detector, M5 execution structure break detector, M5 FVG/OB detector, and 13-state deterministic setup state machine. |
+| `showcase/signal_engine.mqh` | Obsolete / Legacy Engine | Contained previous H1 PWH/PWL/PDH/PDL sweep signal logic. Retained as standalone file for reference but bypassed and disabled from active trading loop. |
+| `showcase/risk_manager.mqh` | Production / Risk Protection | Multi-layer pre-trade risk gates, daily DD soft/hard stop, total portfolio DD emergency stop, daily reset, circuit breaker, ATR/risk-based lot sizer. **RETAINED IN FULL**. |
+| `showcase/safety_filters.mqh` | Production / Safety Filters | Pre-trade blocking conditions (spread, GMT trading session, Asian range, rollover window, toxic volatility, cooldown). **RETAINED IN FULL**. |
+| `showcase/position_manager.mqh` | Production / Position Mgmt | Active trade management (stealth SL/TP, break-even, partial TPs, ATR trailing, Friday close). **RETAINED IN FULL**. |
+| `showcase/PropGuardian.ex5` | Build Artifact | Compiled output binary. |
+| `tests/test_smc_engine.py` | Unit Tests | Python unittest suite covering 15 deterministic strategy rules. |
 
 ---
 
-## 3. Integration Points for SMC Engine (`smc_engine.mqh`)
+## 3. Integration Points & Execution Flow
 
-1. **New Module (`showcase/smc_engine.mqh`)**:
-   - Houses the multi-timeframe structure tracker (4H, M15, M5), 5-bar (4H/M15) and 3-bar (M5) swing detectors, 4H POI state, M15 sweep & CHoCH detector, M5 displacement & FVG detector, and setup state machine lifecycle.
-   - Maintains an array of `SMCSetup` state trackers with unique setup IDs (`SETUP_YYYYMMDD_HHMMSS_N`).
+1. **SMC Engine State Machine (`showcase/smc_engine.mqh`)**:
+   - Maintains `g_SMCSetups` array tracking symbol setups across 13 deterministic states:
+     `SMC_IDLE` → `SMC_H4_POI_ACTIVE` → `SMC_WAITING_FOR_M15_SWEEP` → `SMC_M15_SWEEP_DETECTED` → `SMC_WAITING_FOR_M15_CHOCH` → `SMC_M15_CHOCH_CONFIRMED` → `SMC_WAITING_FOR_M5_CONFIRMATION` → `SMC_M5_CONFIRMATION` → `SMC_FVG_DETECTED` → `SMC_WAITING_FOR_FVG_RETRACE` → `SMC_ENTRY_SUBMITTED` → `SMC_TRADE_ACTIVE` → `SMC_COMPLETED` (or `SMC_INVALIDATED`).
 
-2. **Main Loop (`showcase/PropGuardian.mq5`)**:
-   - `OnTimer()` will drive candle-close evaluation on 4H, M15, and M5 timeframes across tradeable symbols.
-   - When `SMC_UseStrategy` is enabled, `OnTimer()` triggers `SMCEngine_OnTick()` / candle-close handlers.
-   - When an SMC setup reaches `SMC_FVG_CONFIRMED`, `PropGuardian.mq5` verifies pre-trade risk via `CanOpenTrade()` in `risk_manager.mqh`.
-   - Upon approval, a pending limit order (`ORDER_TYPE_BUY_LIMIT` / `ORDER_TYPE_SELL_LIMIT`) is placed at **50% of the M5 FVG**.
+2. **Main EA Loop (`showcase/PropGuardian.mq5`)**:
+   - `OnTimer()` invokes `SMCEngine_OnTick()` to advance setups across tradeable symbols.
+   - When a setup reaches `SMC_WAITING_FOR_FVG_RETRACE` or `SMC_FVG_CONFIRMED`, `PropGuardian.mq5` calls `CanOpenTrade(g_riskState, symbol)` in `risk_manager.mqh`.
+   - Upon pre-trade approval, a pending limit order (`ORDER_TYPE_BUY_LIMIT` / `ORDER_TYPE_SELL_LIMIT`) is placed at **50% FVG midpoint** with structural SL and TP.
+   - Transition to `SMC_ENTRY_SUBMITTED` occurs upon order placement, `SMC_TRADE_ACTIVE` on fill (via `OnTradeTransaction`), and `SMC_COMPLETED` upon position close.
 
 3. **Risk Management Integration (`risk_manager.mqh` & `safety_filters.mqh`)**:
-   - The SMC engine supplies entry price, structural SL, and opposing structural TP to `risk_manager.mqh`.
-   - `CanOpenTrade()` evaluates all 8 pre-trade risk gates (daily DD, total DD, max trades/day, circuit breaker, max positions, currency exposure, safety filters). If rejected, the setup transitions to `SMC_INVALIDATED` with reason logged.
-
-4. **Position Management (`position_manager.mqh`)**:
-   - Once a limit order fills (detected in `OnTradeTransaction`), position tracking is initialized in `g_tracker`.
-   - Break-even, partial TP, and Friday close logic from `position_manager.mqh` remain active for filled positions.
+   - `CanOpenTrade()` evaluates pre-trade risk gates (daily loss soft/hard stop, total portfolio DD, max trades/day, circuit breaker, max open positions, currency exposure, safety filters).
+   - `CalculateLotSize()` calculates volume dynamically using structural stop distance (`MathAbs(entryPrice - slPrice)`).
 
 ---
 
 ## 4. Components Replaced vs. Retained
 
-### Replaced or Overridden by SMC Strategy (when `SMC_UseStrategy = true`)
-- **Previous Signal Engine (`CheckSignal` in `signal_engine.mqh`)**: The previous H1 PWH/PDL sweep logic and buy/sell stop reclaim orders are bypassed in favor of the SMC multi-timeframe state machine and pending limit orders at 50% FVG.
-- **ATR-based Initial Stop Loss**: Initial SL is determined structurally (below/above swept extreme / M5 structural swing) rather than blindly multiplying ATR.
+### Replaced or Disabled
+- **Legacy Signal Engine (`CheckSignal` in `signal_engine.mqh`)**: Legacy H1 sweep signal scanner and buy/sell stop reclaim orders removed from the pre-trade risk check and main timer loop.
+- **Generic ATR Stop Loss**: Initial SL is determined structurally (placed beyond swept low/high extreme) rather than generic ATR multiplication.
 
 ### Retained Unchanged
-- **Pre-trade Risk Gates**: All gates in `risk_manager.mqh` (daily DD soft/hard stop, portfolio emergency stop, max trades per day, circuit breaker).
-- **Position Manager Execution**: Order filling checks, lot normalization, lot sizing based on frozen account risk %, position tracking in `OnTradeTransaction`.
-- **Safety Filters**: Spread check, trading session check, Asian range check, rollover block, toxic volatility check.
+- **Pre-trade Risk Gates**: Daily soft/hard drawdown stops, portfolio emergency kill switch, trades/day limit, circuit breaker.
+- **Position Sizing & Safety Filters**: Spread check, GMT session window, Asian range filter, rollover block, toxic volatility guard.
+- **Active Position Management**: Stealth mode, break-even (+4.0R), partial TP (+4.0R / +10.0R), ATR trailing stop, Friday close.
 
 ---
 
-## 5. Audit Findings & Existing-Code Discrepancies (Section 23 Verification)
+## 5. Discrepancy & Production vs Showcase Audit Findings
 
-1. **`Trend_SMA_Period` (D1 SMA Filter)**:
-   - *Finding*: `GetTrendBias()` in `signal_engine.mqh` calculates D1 SMA50 bias, but `CheckSignal()` in the showcase did not actually restrict entries by `GetTrendBias()`.
-   - *SMC Rule*: Market structure is established strictly from 4H, M15, and M5 confirmed swing points (BULLISH/BEARISH/UNDEFINED), NOT from moving averages. The SMA filter is not used for SMC structure decisions.
-
-2. **Cooldown State**:
-   - *Finding*: `IsInCooldown()` in `safety_filters.mqh` uses `static` arrays in RAM (`lastTradeTime[]`, `lastTradeSymbol[]`).
-   - *Impact*: On EA restart, RAM state is cleared, resetting cooldowns. SMC setup state tracking will also operate in RAM with clean initialization or recovery checks.
-
-3. **News Filter**:
-   - *Finding*: `IsNearNewsEvent()` in `safety_filters.mqh` is a placeholder returning `false`.
-   - *Impact*: Documented as an external dependency stub. News filtering relies on MT5 calendar API or external feeds if available; currently non-blocking in code.
-
-4. **Latency & Floating Loss Checks**:
-   - *Finding*: `IsLatencyAcceptable()` and `IsFloatingLossExceeded()` return static default values (`true` / `false`). Documented as showcase stubs.
-
-5. **Position Management State**:
-   - *Finding*: `PositionTracker` in `position_manager.mqh` tracks single ticket in RAM.
-   - *Impact*: On EA restart, `g_tracker` resets. Existing trade detection in `OnTradeTransaction` and `PositionSelectByTicket` handles active positions gracefully.
-
-6. **SL/TP Mechanics Alignment**:
-   - *Finding*: The previous engine used `SL_ATR_Multiplier` on H1.
-   - *SMC Alignment*: SMC Strategy v0.1 uses **Structural SL** (placed beyond the swept structural extreme / M5 swing with spread buffer). The existing risk manager lot sizer calculates volume dynamically using `stopDistance = MathAbs(entryPrice - slPrice)`.
-
----
-
-## 6. Critical Rules & Assumptions That MUST NOT Be Made
-
-1. **No Discretionary EQH/EQL Rules**: Strictly use `<` and `>` comparisons for 5-bar and 3-bar swings. Do not introduce `>=` or `<=` or arbitrary tie-breakers.
-2. **No Intrabar Triggering**: All swings, BOS, CHoCH, and FVG confirmations MUST occur on closed candles (index >= 1).
-3. **No Repainting**: Swings are confirmed only after the required right-side candles close (2 bars for 5-bar swing, 1 bar for 3-bar swing).
-4. **No Chasing**: Limit orders placed at 50% FVG. If price has already passed through the 50% midpoint before order placement, cancel the setup immediately.
-5. **No Optimization/Curve-Fitting**: Fixed parameters (5-bar 4H/M15, 3-bar M5, 50% FVG) must remain fixed. Parameters are not tuned for historical profit fitting.
+1. **Showcase / Demo Scope**:
+   - The `showcase/` directory contains sanitized/demo MQL5 code. MetaEditor / MQL5 compilation tools are not installed in the local environment, so MQL5 compilation must be performed in MT5 / MetaEditor.
+2. **News Filter Integration**:
+   - `IsNearNewsEvent()` in `safety_filters.mqh` is an external calendar stub returning `false`. Third-party economic calendar integration is required for news event blocking.
+3. **In-Memory Setup State**:
+   - Setup state is maintained in RAM. Terminal or EA restarts re-initialize setup trackers to `SMC_IDLE`. Active limit orders and open positions are preserved by MT5 and managed via `g_tracker` and `OnTradeTransaction`.

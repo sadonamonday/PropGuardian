@@ -49,17 +49,18 @@ enum ENUM_POI_TYPE
 enum ENUM_SMC_STATE
 {
    SMC_IDLE = 0,
-   SMC_POI_ACTIVE,
-   SMC_WAITING_FOR_SWEEP,
-   SMC_SWEEP_CONFIRMED,
-   SMC_WAITING_FOR_CHOCH,
-   SMC_CHOCH_CONFIRMED,
+   SMC_H4_POI_ACTIVE,
+   SMC_WAITING_FOR_M15_SWEEP,
+   SMC_M15_SWEEP_DETECTED,
+   SMC_WAITING_FOR_M15_CHOCH,
+   SMC_M15_CHOCH_CONFIRMED,
    SMC_WAITING_FOR_M5_CONFIRMATION,
-   SMC_M5_DISPLACEMENT_CONFIRMED,
-   SMC_FVG_CONFIRMED,
-   SMC_WAITING_FOR_FVG_ENTRY,
+   SMC_M5_CONFIRMATION,
+   SMC_FVG_DETECTED,
+   SMC_WAITING_FOR_FVG_RETRACE,
    SMC_ENTRY_SUBMITTED,
    SMC_TRADE_ACTIVE,
+   SMC_COMPLETED,
    SMC_INVALIDATED
 };
 
@@ -149,17 +150,18 @@ string SMCStateToString(ENUM_SMC_STATE state)
    switch(state)
    {
       case SMC_IDLE:                        return "SMC_IDLE";
-      case SMC_POI_ACTIVE:                  return "SMC_POI_ACTIVE";
-      case SMC_WAITING_FOR_SWEEP:           return "SMC_WAITING_FOR_SWEEP";
-      case SMC_SWEEP_CONFIRMED:             return "SMC_SWEEP_CONFIRMED";
-      case SMC_WAITING_FOR_CHOCH:           return "SMC_WAITING_FOR_CHOCH";
-      case SMC_CHOCH_CONFIRMED:             return "SMC_CHOCH_CONFIRMED";
+      case SMC_H4_POI_ACTIVE:               return "SMC_H4_POI_ACTIVE";
+      case SMC_WAITING_FOR_M15_SWEEP:       return "SMC_WAITING_FOR_M15_SWEEP";
+      case SMC_M15_SWEEP_DETECTED:          return "SMC_M15_SWEEP_DETECTED";
+      case SMC_WAITING_FOR_M15_CHOCH:       return "SMC_WAITING_FOR_M15_CHOCH";
+      case SMC_M15_CHOCH_CONFIRMED:         return "SMC_M15_CHOCH_CONFIRMED";
       case SMC_WAITING_FOR_M5_CONFIRMATION: return "SMC_WAITING_FOR_M5_CONFIRMATION";
-      case SMC_M5_DISPLACEMENT_CONFIRMED:   return "SMC_M5_DISPLACEMENT_CONFIRMED";
-      case SMC_FVG_CONFIRMED:               return "SMC_FVG_CONFIRMED";
-      case SMC_WAITING_FOR_FVG_ENTRY:       return "SMC_WAITING_FOR_FVG_ENTRY";
+      case SMC_M5_CONFIRMATION:             return "SMC_M5_CONFIRMATION";
+      case SMC_FVG_DETECTED:                return "SMC_FVG_DETECTED";
+      case SMC_WAITING_FOR_FVG_RETRACE:     return "SMC_WAITING_FOR_FVG_RETRACE";
       case SMC_ENTRY_SUBMITTED:             return "SMC_ENTRY_SUBMITTED";
       case SMC_TRADE_ACTIVE:                return "SMC_TRADE_ACTIVE";
+      case SMC_COMPLETED:                   return "SMC_COMPLETED";
       case SMC_INVALIDATED:                 return "SMC_INVALIDATED";
    }
    return "UNKNOWN";
@@ -751,6 +753,39 @@ int CountActiveSetups()
    return count;
 }
 
+// Helper to check M5 execution structure break (BODY close above M5 swing high for BUY / below M5 swing low for SELL)
+bool CheckM5ExecutionBreak(string symbol, ENUM_SIGNAL_TYPE direction, SMCSwing &outM5Swing)
+{
+   ZeroMemory(outM5Swing);
+   if(direction == SIGNAL_BUY)
+   {
+      SMCSwing m5High;
+      if(FindMostRecentSwingHigh(symbol, SMC_M5_Timeframe, 30, m5High))
+      {
+         double close1 = iClose(symbol, SMC_M5_Timeframe, 1);
+         if(close1 > m5High.price)
+         {
+            outM5Swing = m5High;
+            return true;
+         }
+      }
+   }
+   else if(direction == SIGNAL_SELL)
+   {
+      SMCSwing m5Low;
+      if(FindMostRecentSwingLow(symbol, SMC_M5_Timeframe, 30, m5Low))
+      {
+         double close1 = iClose(symbol, SMC_M5_Timeframe, 1);
+         if(close1 < m5Low.price)
+         {
+            outM5Swing = m5Low;
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
 // Manage lifecycle for a specific setup on a symbol
 void ProcessSMCSetupStateMachine(SMCSetup &setup)
 {
@@ -775,12 +810,12 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          {
             setup.poi4H = poi;
             setup.direction = (poi.type == POI_TYPE_DEMAND) ? SIGNAL_BUY : SIGNAL_SELL;
-            setup.state = SMC_POI_ACTIVE;
+            setup.state = SMC_H4_POI_ACTIVE;
          }
          break;
       }
 
-      case SMC_POI_ACTIVE:
+      case SMC_H4_POI_ACTIVE:
       {
          if(!setup.poi4H.isActive)
          {
@@ -790,12 +825,12 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
          if(IsPriceIn4HPOI(symbol, setup.poi4H))
          {
-            setup.state = SMC_WAITING_FOR_SWEEP;
+            setup.state = SMC_WAITING_FOR_M15_SWEEP;
          }
          break;
       }
 
-      case SMC_WAITING_FOR_SWEEP:
+      case SMC_WAITING_FOR_M15_SWEEP:
       {
          SMCSwing sweptSwing;
          if(CheckM15LiquiditySweep(symbol, setup.poi4H, setup.direction, sweptSwing))
@@ -803,12 +838,12 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             setup.m15SweptSwing = sweptSwing;
             setup.sweepPrice     = (setup.direction == SIGNAL_BUY) ? iLow(symbol, SMC_M15_Timeframe, 1) : iHigh(symbol, SMC_M15_Timeframe, 1);
             setup.sweepTime      = iTime(symbol, SMC_M15_Timeframe, 1);
-            setup.state          = SMC_SWEEP_CONFIRMED;
+            setup.state          = SMC_M15_SWEEP_DETECTED;
          }
          break;
       }
 
-      case SMC_SWEEP_CONFIRMED:
+      case SMC_M15_SWEEP_DETECTED:
       {
          // Search for CHoCH candidate swing
          SMCSwing chochSwing;
@@ -816,7 +851,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          {
             setup.m15ChochSwing = chochSwing;
             setup.chochPrice    = chochSwing.price;
-            setup.state         = SMC_WAITING_FOR_CHOCH;
+            setup.state         = SMC_WAITING_FOR_M15_CHOCH;
          }
          else
          {
@@ -827,12 +862,12 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          break;
       }
 
-      case SMC_WAITING_FOR_CHOCH:
+      case SMC_WAITING_FOR_M15_CHOCH:
       {
          if(CheckM15CHoCH(symbol, setup.direction, setup.m15ChochSwing))
          {
             setup.chochTime = iTime(symbol, SMC_M15_Timeframe, 1);
-            setup.state     = SMC_CHOCH_CONFIRMED;
+            setup.state     = SMC_M15_CHOCH_CONFIRMED;
          }
          else if(now - setup.sweepTime > (86400 * 2))
          {
@@ -841,7 +876,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          break;
       }
 
-      case SMC_CHOCH_CONFIRMED:
+      case SMC_M15_CHOCH_CONFIRMED:
       {
          setup.state = SMC_WAITING_FOR_M5_CONFIRMATION;
          break;
@@ -849,57 +884,63 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_WAITING_FOR_M5_CONFIRMATION:
       {
-         // Check M5 structure confirmation and displacement
-         ENUM_SMC_STRUCTURE m5Struct = GetTimeframeStructure(symbol, SMC_M5_Timeframe, 30);
-         bool structMatches = (setup.direction == SIGNAL_BUY && m5Struct == SMC_STRUCTURE_BULLISH) ||
-                              (setup.direction == SIGNAL_SELL && m5Struct == SMC_STRUCTURE_BEARISH);
-
-         SMCFVG fvg;
-         if(FindM5FVG(symbol, setup.direction, fvg))
+         // Check M5 execution structure break (M5 BOS body close)
+         SMCSwing m5Swing;
+         if(CheckM5ExecutionBreak(symbol, setup.direction, m5Swing))
          {
-            setup.m5FVG = fvg;
-            setup.entryPrice = fvg.midpoint;
-
-            // Calculate Structural SL
-            double spread = SymbolInfoDouble(symbol, SYMBOL_ASK) - SymbolInfoDouble(symbol, SYMBOL_BID);
-            if(setup.direction == SIGNAL_BUY)
-            {
-               setup.slPrice = setup.sweepPrice - spread - (2.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
-            }
-            else
-            {
-               setup.slPrice = setup.sweepPrice + spread + (2.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
-            }
-            setup.stopDistance = MathAbs(setup.entryPrice - setup.slPrice);
-
-            // Calculate Opposing Structural TP
-            SMCSwing oppSwing;
-            if(setup.direction == SIGNAL_BUY)
-            {
-               if(FindMostRecentSwingHigh(symbol, SMC_M15_Timeframe, 50, oppSwing))
-                  setup.tpPrice = oppSwing.price;
-               else
-                  setup.tpPrice = setup.entryPrice + (setup.stopDistance * 3.0);
-            }
-            else
-            {
-               if(FindMostRecentSwingLow(symbol, SMC_M15_Timeframe, 50, oppSwing))
-                  setup.tpPrice = oppSwing.price;
-               else
-                  setup.tpPrice = setup.entryPrice - (setup.stopDistance * 3.0);
-            }
-
-            // Supporting OB
-            FindM5OrderBlock(symbol, setup.direction, setup.m5OB);
-
-            setup.state = SMC_FVG_CONFIRMED;
+            setup.state = SMC_M5_CONFIRMATION;
          }
          break;
       }
 
-      case SMC_FVG_CONFIRMED:
+      case SMC_M5_CONFIRMATION:
       {
-         // Verify no-chase condition before submitting order
+         SMCFVG fvg;
+         if(FindM5FVG(symbol, setup.direction, fvg))
+         {
+            setup.m5FVG = fvg;
+            setup.state = SMC_FVG_DETECTED;
+         }
+         break;
+      }
+
+      case SMC_FVG_DETECTED:
+      {
+         setup.entryPrice = setup.m5FVG.midpoint;
+
+         // Calculate Structural SL
+         double spread = SymbolInfoDouble(symbol, SYMBOL_ASK) - SymbolInfoDouble(symbol, SYMBOL_BID);
+         if(setup.direction == SIGNAL_BUY)
+         {
+            setup.slPrice = setup.sweepPrice - spread - (2.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
+         }
+         else
+         {
+            setup.slPrice = setup.sweepPrice + spread + (2.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
+         }
+         setup.stopDistance = MathAbs(setup.entryPrice - setup.slPrice);
+
+         // Calculate Opposing Structural TP
+         SMCSwing oppSwing;
+         if(setup.direction == SIGNAL_BUY)
+         {
+            if(FindMostRecentSwingHigh(symbol, SMC_M15_Timeframe, 50, oppSwing))
+               setup.tpPrice = oppSwing.price;
+            else
+               setup.tpPrice = setup.entryPrice + (setup.stopDistance * 3.0);
+         }
+         else
+         {
+            if(FindMostRecentSwingLow(symbol, SMC_M15_Timeframe, 50, oppSwing))
+               setup.tpPrice = oppSwing.price;
+            else
+               setup.tpPrice = setup.entryPrice - (setup.stopDistance * 3.0);
+         }
+
+         // Supporting OB
+         FindM5OrderBlock(symbol, setup.direction, setup.m5OB);
+
+         // Verify no-chase condition before proceeding to waiting for retrace
          double currentPrice = iClose(symbol, SMC_M5_Timeframe, 0);
          if(setup.direction == SIGNAL_BUY && currentPrice <= setup.entryPrice)
          {
@@ -912,11 +953,11 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             break;
          }
 
-         setup.state = SMC_WAITING_FOR_FVG_ENTRY;
+         setup.state = SMC_WAITING_FOR_FVG_RETRACE;
          break;
       }
 
-      case SMC_WAITING_FOR_FVG_ENTRY:
+      case SMC_WAITING_FOR_FVG_RETRACE:
       {
          // Check FVG invalidation while waiting for order execution
          if(IsFVGInvalidated(symbol, setup.m5FVG))
@@ -929,6 +970,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_ENTRY_SUBMITTED:
       case SMC_TRADE_ACTIVE:
+      case SMC_COMPLETED:
       {
          // Active trade management handled via OnTradeTransaction & PositionTracker
          break;

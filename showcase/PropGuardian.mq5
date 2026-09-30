@@ -126,111 +126,31 @@ void OnTimer()
    }
    else
    {
-      // 5. Scan for new trade opportunities (no open position, no pending order)
-      if(SMC_UseStrategy)
+      // 5. Advance SMC Engine State Machine for all tradeable symbols (PropGuardian SMC Strategy v0.1)
+      SMCEngine_OnTick();
+
+      for(int i = 0; i < 5; i++)
       {
-         // Advance SMC Engine State Machine for all tradeable symbols
-         SMCEngine_OnTick();
+         string symbol = TradeableSymbols[i];
+         int setupIdx = GetOrCreateSetupForSymbol(symbol);
 
-         for(int i = 0; i < 5; i++)
+         if(g_SMCSetups[setupIdx].state == SMC_WAITING_FOR_FVG_RETRACE || g_SMCSetups[setupIdx].state == SMC_FVG_DETECTED)
          {
-            string symbol = TradeableSymbols[i];
-            int setupIdx = GetOrCreateSetupForSymbol(symbol);
-
-            if(g_SMCSetups[setupIdx].state == SMC_WAITING_FOR_FVG_ENTRY)
-            {
-               SignalResult signal;
-               signal.type         = g_SMCSetups[setupIdx].direction;
-               signal.entryPrice   = g_SMCSetups[setupIdx].entryPrice;
-               signal.slPrice      = g_SMCSetups[setupIdx].slPrice;
-               signal.stopDistance = g_SMCSetups[setupIdx].stopDistance;
-               signal.levelSwept   = "SMC_M15_SWEEP";
-
-               if(CanOpenTrade(g_riskState, symbol, signal))
-               {
-                  double lots = CalculateLotSize(symbol, signal.stopDistance, g_riskState);
-                  if(lots <= 0)
-                  {
-                     InvalidateSetup(g_SMCSetups[setupIdx], "Calculated lot size <= 0");
-                     continue;
-                  }
-
-                  int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-
-                  MqlTradeRequest request;
-                  MqlTradeResult  result;
-                  ZeroMemory(request);
-                  ZeroMemory(result);
-
-                  request.action       = TRADE_ACTION_PENDING;
-                  request.symbol       = symbol;
-                  request.volume       = lots;
-                  request.type         = (signal.type == SIGNAL_BUY) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
-                  request.price        = NormalizeDouble(signal.entryPrice, digits);
-                  request.sl           = NormalizeDouble(signal.slPrice, digits);
-                  request.tp           = NormalizeDouble(g_SMCSetups[setupIdx].tpPrice, digits);
-                  request.deviation    = 10;
-                  request.magic        = Magic_Number;
-                  request.type_filling = GetSupportedFillingMode(symbol);
-                  request.type_time    = ORDER_TIME_SPECIFIED;
-                  request.expiration   = TimeCurrent() + (Pending_Order_Expiry_Bars * PeriodSeconds(PERIOD_H1));
-
-                  if(OrderSend(request, result))
-                  {
-                     if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
-                     {
-                        g_pendingOrderTicket               = result.order;
-                        g_pendingOrderExpiryTime           = request.expiration;
-                        g_SMCSetups[setupIdx].orderTicket  = result.order;
-                        g_SMCSetups[setupIdx].state        = SMC_ENTRY_SUBMITTED;
-                        g_riskState.tradesToday++;
-
-                        SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "ENTRY_ORDER_CREATED",
-                               StringFormat("%s Limit at %.5f, SL %.5f, TP %.5f, Lots %.2f",
-                                            signal.type == SIGNAL_BUY ? "BUY" : "SELL",
-                                            request.price, request.sl, request.tp, lots));
-                        break;
-                     }
-                     else
-                     {
-                        PrintFormat("[ERROR] Pending OrderSend failed for %s: retcode %d", symbol, result.retcode);
-                        InvalidateSetup(g_SMCSetups[setupIdx], StringFormat("OrderSend failed retcode %d", result.retcode));
-                     }
-                  }
-                  else
-                  {
-                     PrintFormat("[ERROR] Pending OrderSend execution error for %s: retcode %d", symbol, result.retcode);
-                     InvalidateSetup(g_SMCSetups[setupIdx], StringFormat("OrderSend execution error retcode %d", result.retcode));
-                  }
-               }
-               else
-               {
-                  SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "TRADE_REJECTED_BY_RISK", "Pre-trade risk gate blocked execution");
-                  InvalidateSetup(g_SMCSetups[setupIdx], "Pre-trade risk gate blocked execution");
-               }
-            }
-         }
-      }
-      else
-      {
-         // Legacy signal scanner fall-back
-         static datetime lastBarTimes[5] = {0, 0, 0, 0, 0};
-
-         for(int i = 0; i < 5; i++)
-         {
-            string symbol = TradeableSymbols[i];
-            datetime completedBarTime = iTime(symbol, PERIOD_H1, 1);
-            if(completedBarTime <= 0 || completedBarTime == lastBarTimes[i])
-               continue;
-
-            lastBarTimes[i] = completedBarTime;
-
             SignalResult signal;
-            if(CanOpenTrade(g_riskState, symbol, signal))
+            signal.type         = g_SMCSetups[setupIdx].direction;
+            signal.entryPrice   = g_SMCSetups[setupIdx].entryPrice;
+            signal.slPrice      = g_SMCSetups[setupIdx].slPrice;
+            signal.stopDistance = g_SMCSetups[setupIdx].stopDistance;
+            signal.levelSwept   = "SMC_M15_SWEEP";
+
+            if(CanOpenTrade(g_riskState, symbol))
             {
                double lots = CalculateLotSize(symbol, signal.stopDistance, g_riskState);
                if(lots <= 0)
+               {
+                  InvalidateSetup(g_SMCSetups[setupIdx], "Calculated lot size <= 0");
                   continue;
+               }
 
                int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
 
@@ -242,10 +162,10 @@ void OnTimer()
                request.action       = TRADE_ACTION_PENDING;
                request.symbol       = symbol;
                request.volume       = lots;
-               request.type         = (signal.type == SIGNAL_BUY) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+               request.type         = (signal.type == SIGNAL_BUY) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
                request.price        = NormalizeDouble(signal.entryPrice, digits);
                request.sl           = NormalizeDouble(signal.slPrice, digits);
-               request.tp           = 0.0;
+               request.tp           = NormalizeDouble(g_SMCSetups[setupIdx].tpPrice, digits);
                request.deviation    = 10;
                request.magic        = Magic_Number;
                request.type_filling = GetSupportedFillingMode(symbol);
@@ -256,20 +176,34 @@ void OnTimer()
                {
                   if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
                   {
-                     g_pendingOrderTicket     = result.order;
-                     g_pendingOrderExpiryTime = request.expiration;
+                     g_pendingOrderTicket               = result.order;
+                     g_pendingOrderExpiryTime           = request.expiration;
+                     g_SMCSetups[setupIdx].orderTicket  = result.order;
+                     g_SMCSetups[setupIdx].state        = SMC_ENTRY_SUBMITTED;
                      g_riskState.tradesToday++;
+
+                     SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "ENTRY_ORDER_CREATED",
+                            StringFormat("%s Limit at %.5f, SL %.5f, TP %.5f, Lots %.2f",
+                                         signal.type == SIGNAL_BUY ? "BUY" : "SELL",
+                                         request.price, request.sl, request.tp, lots));
                      break;
                   }
                   else
                   {
                      PrintFormat("[ERROR] Pending OrderSend failed for %s: retcode %d", symbol, result.retcode);
+                     InvalidateSetup(g_SMCSetups[setupIdx], StringFormat("OrderSend failed retcode %d", result.retcode));
                   }
                }
                else
                {
                   PrintFormat("[ERROR] Pending OrderSend execution error for %s: retcode %d", symbol, result.retcode);
+                  InvalidateSetup(g_SMCSetups[setupIdx], StringFormat("OrderSend execution error retcode %d", result.retcode));
                }
+            }
+            else
+            {
+               SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "TRADE_REJECTED_BY_RISK", "Pre-trade risk gate blocked execution");
+               InvalidateSetup(g_SMCSetups[setupIdx], "Pre-trade risk gate blocked execution");
             }
          }
       }
@@ -401,7 +335,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                {
                   SMCLog(g_SMCSetups[s].setupID, g_SMCSetups[s].symbol, "TRADE_COMPLETED",
                          StringFormat("Position #%d closed with total profit $%.2f", g_tracker.ticket, totalProfit));
-                  InvalidateSetup(g_SMCSetups[s], "Trade completed and closed");
+                  g_SMCSetups[s].state = SMC_COMPLETED;
+                  g_SMCSetups[s].lastUpdatedTime = TimeCurrent();
                   break;
                }
             }
