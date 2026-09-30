@@ -1,75 +1,68 @@
 # PropGuardian SMC Strategy v0.1 — Technical Specification & Documentation
 
-## 1. Overview & Core Architecture
-PropGuardian SMC Strategy v0.1 implements a deterministic, multi-timeframe Smart Money Concepts trading engine in MQL5 for MetaTrader 5.
+## 1. Current Locked Strategy Architecture
+PropGuardian SMC Strategy v0.1 implements a deterministic multi-timeframe Smart Money Concepts (SMC) execution engine in MQL5 for MetaTrader 5:
 
-The engine relies on a strict multi-timeframe hierarchy:
-- **4H (Context Timeframe)**: Directional structure mapping, 4H POI (Supply/Demand) identification.
-- **M15 (Structural Timeframe)**: 5-bar swing mapping, POI interaction detection, M15 liquidity sweep, and M15 Change of Character (CHoCH) confirmation on candle body close.
-- **M5 (Execution Timeframe)**: 3-bar swing mapping, execution structure alignment, displacement, Fair Value Gap (FVG) creation, and pending limit order execution at **50% FVG midpoint**.
+**4H → M15 → M5**
+
+### Timeframe Responsibilities:
+- **4H (Context Timeframe)**: Higher-timeframe context, market structure mapping, major POI (Supply/Demand) identification, setup activation.
+- **M15 (Structural Timeframe)**: Intermediate structure mapping, 4H POI touch interaction, M15 liquidity sweep detection, M15 CHoCH confirmation on completed candle body close.
+- **M5 (Execution Timeframe)**: Execution structure confirmation (M5 BOS body close), displacement impulse, Fair Value Gap (FVG) detection, and limit order entry at **50% FVG midpoint**.
 
 ---
 
 ## 2. Swing Definitions
-- **4H and M15 Swings**: 5-Bar Fractals on completed candles.
+- **4H and M15 Swings**: Confirmed 5-Bar Fractals on completed candles.
   - *Swing High*: `High[i] > High[i+1]` AND `High[i] > High[i+2]` AND `High[i] > High[i-1]` AND `High[i] > High[i-2]`
   - *Swing Low*: `Low[i] < Low[i+1]` AND `Low[i] < Low[i+2]` AND `Low[i] < Low[i-1]` AND `Low[i] < Low[i-2]`
-  - Confirmed only after two right-side candles close (`barIndex >= 2`).
-- **M5 Swings**: 3-Bar Fractals on completed candles.
+  - Becomes confirmed only after 2 right-side candles close (`barIndex >= 3`).
+- **M5 Swings**: Confirmed 3-Bar Fractals on completed candles.
   - *Swing High*: `High[i] > High[i+1]` AND `High[i] > High[i-1]`
   - *Swing Low*: `Low[i] < Low[i+1]` AND `Low[i] < Low[i-1]`
-  - Confirmed after one right-side candle closes (`barIndex >= 1`).
+  - Becomes confirmed after 1 right-side candle closes (`barIndex >= 2`).
 - **Equal High / Equal Low Rule**:
-  - SOURCE-DERIVED RULE / SPEC: Equal highs/lows do NOT qualify as normal fractal swings under strict `<` and `>` comparisons.
-  - No arbitrary tie-breaking logic is applied.
+  - Strict `<` and `>` comparisons only. No equal-high/equal-low tie-breaking algorithm is invented. Unclosed/future candles are never used.
 
 ---
 
 ## 3. Structure, BOS & CHoCH
-- **Market Structure**: Tracked independently for each timeframe (`SMC_STRUCTURE_BULLISH`, `SMC_STRUCTURE_BEARISH`, `SMC_STRUCTURE_UNDEFINED`).
-- **Break of Structure (BOS)**: Trend continuation triggered when a completed candle **body closes** beyond the relevant confirmed swing level.
-- **Change of Character (CHoCH)**: Reversal signal.
-  - *Bullish CHoCH*: Existing structure BEARISH -> M15 price sweeps liquidity inside 4H Demand POI -> Completed M15 candle body closes above the most recent confirmed Lower High preceding the sweep extreme.
-  - *Bearish CHoCH*: Existing structure BULLISH -> M15 price sweeps liquidity inside 4H Supply POI -> Completed M15 candle body closes below the most recent confirmed Higher Low preceding the sweep extreme.
-  - Wick-only breaks are NOT BOS or CHoCH.
+- **BOS (Break of Structure)**: Trend continuation.
+  - *Bullish BOS*: Completed candle BODY closes above relevant confirmed swing high.
+  - *Bearish BOS*: Completed candle BODY closes below relevant confirmed swing low.
+  - Wick-only breaks are treated as liquidity sweeps/interactions, NOT structural BOS.
+- **CHoCH (Change of Character)**: Structural reversal.
+  - *Bullish CHoCH*: Market in established bearish structure → M15 liquidity sweep occurs → Identify most recent confirmed lower high preceding final bearish leg into that low → Completed M15 candle BODY closes above that lower high.
+  - *Bearish CHoCH*: Market in established bullish structure → M15 liquidity sweep occurs → Identify most recent confirmed higher low preceding final bullish leg into that high → Completed M15 candle BODY closes below that higher low.
 
 ---
 
-## 4. Liquidity Sweep Rule
-- **PROPGUARDIAN ENGINEERING RECOMMENDATION**:
-  - *Long Setup*: M15 price trades below the most recent confirmed M15 Swing Low while interacting with a 4H Demand POI, and the same completed M15 candle closes back above that swing-low price.
-  - *Short Setup*: M15 price trades above the most recent confirmed M15 Swing High while interacting with a 4H Supply POI, and the same completed M15 candle closes back below that swing-high price.
+## 4. 4H POI & M15 Liquidity Sweep
+- **4H POI Context**: Activates the setup. M15 bar range `[Low, High]` must intersect 4H POI range `[bottom, top]`.
+- **M15 Liquidity Sweep Rule**:
+  - *LONG*: Active 4H demand context exists → Price trades below most recent confirmed M15 swing low → Completed M15 candle closes back ABOVE that swept swing-low level.
+  - *SHORT*: Active 4H supply context exists → Price trades above most recent confirmed M15 swing high → Completed M15 candle closes back BELOW that swept swing-high level.
 
 ---
 
-## 5. Fair Value Gap (FVG) & Execution
-- **3-Candle Structure (M5)**:
-  - *Bullish FVG*: `Low(Candle 3) > High(Candle 1)`. Midpoint = `(Low(Candle 3) + High(Candle 1)) / 2.0`.
-  - *Bearish FVG*: `High(Candle 3) < Low(Candle 1)`. Midpoint = `(High(Candle 3) + Low(Candle 1)) / 2.0`.
-  - Confirmed on Candle 3 close.
-- **Entry Mechanics**:
-  - Pending Limit Order (`ORDER_TYPE_BUY_LIMIT` / `ORDER_TYPE_SELL_LIMIT`) placed at exact **50% FVG midpoint**.
-  - **No-Chase Rule**: If price has already crossed through the 50% midpoint before order creation, the setup is invalidated immediately.
-- **FVG Invalidation**:
-  - Invalidated if a completed M5 candle body closes beyond the Candle 1 boundary.
+## 5. M5 Execution, FVG & Order Entry
+- **M5 Execution Structure**: Requires M5 structural break confirmed by candle BODY close above relevant confirmed M5 swing high (Long) or below M5 swing low (Short).
+- **M5 Displacement & FVG**:
+  - *Bullish FVG*: `Low(C3) > High(C1)`. Midpoint = `(High(C1) + Low(C3)) / 2.0`.
+  - *Bearish FVG*: `High(C3) < Low(C1)`. Midpoint = `(Low(C1) + High(C3)) / 2.0`.
+  - FVG boundaries use candle WICKS (Candle 1 and Candle 3). Confirmed on Candle 3 close.
+- **Order Placement & Mitigation**:
+  - BUY LIMIT / SELL LIMIT placed at 50% FVG midpoint.
+  - *No-Chase Invalidation*: If price passes through 50% midpoint before order creation, cancel setup.
+  - *FVG Invalidation*: Completed candle body close beyond Candle 1 boundary invalidates setup.
 
 ---
 
-## 6. Stop Loss & Take Profit
-- **Stop Loss**: STRUCTURAL SL placed beyond the swept extreme with spread buffer.
-- **Take Profit**: Targeted at opposing confirmed M15 structural swing high/low.
+## 6. Complete Setup Sequences
+- **LONG Sequence**: 4H bullish context / demand POI active → M15 trades below confirmed swing low → M15 closes back above swept low → identify final sweep low → identify most recent confirmed LH preceding final bearish leg → M15 bullish CHoCH body close → M5 bullish execution structure (BOS body close) → M5 bullish displacement & FVG → FVG confirmed on C3 close → BUY LIMIT at 50% FVG midpoint → structural SL below swept low → structural TP at opposing M15 swing high.
+- **SHORT Sequence**: 4H bearish context / supply POI active → M15 trades above confirmed swing high → M15 closes back below swept high → identify final sweep high → identify most recent confirmed HL preceding final bullish leg → M15 bearish CHoCH body close → M5 bearish execution structure (BOS body close) → M5 bearish displacement & FVG → FVG confirmed on C3 close → SELL LIMIT at 50% FVG midpoint → structural SL above swept high → structural TP at opposing M15 swing low.
 
 ---
 
-## 7. State Machine Lifecycle
-`SMC_IDLE` -> `SMC_POI_ACTIVE` -> `SMC_WAITING_FOR_SWEEP` -> `SMC_SWEEP_CONFIRMED` -> `SMC_WAITING_FOR_CHOCH` -> `SMC_CHOCH_CONFIRMED` -> `SMC_WAITING_FOR_M5_CONFIRMATION` -> `SMC_FVG_CONFIRMED` -> `SMC_WAITING_FOR_FVG_ENTRY` -> `SMC_ENTRY_SUBMITTED` -> `SMC_TRADE_ACTIVE` (or `SMC_INVALIDATED`).
-
----
-
-## 8. Risk Management Integration
-All SMC signals pass through `CanOpenTrade()` in `risk_manager.mqh`. Gates include:
-1. Daily loss soft stop (-2.5%) & hard stop (-5.0%)
-2. Portfolio emergency drawdown (-10.0%)
-3. Max trades per day limit
-4. Circuit breaker consecutive loss cooldown
-5. Safety filters (spread, session window, Asian range, rollover window, toxic volatility)
+## 7. Deterministic Setup State Machine
+`SMC_IDLE` → `SMC_H4_POI_ACTIVE` → `SMC_WAITING_FOR_M15_SWEEP` → `SMC_M15_SWEEP_DETECTED` → `SMC_WAITING_FOR_M15_CHOCH` → `SMC_M15_CHOCH_CONFIRMED` → `SMC_WAITING_FOR_M5_CONFIRMATION` → `SMC_M5_CONFIRMATION` → `SMC_FVG_DETECTED` → `SMC_WAITING_FOR_FVG_RETRACE` → `SMC_ENTRY_SUBMITTED` → `SMC_TRADE_ACTIVE` → `SMC_COMPLETED` (or `SMC_INVALIDATED`).

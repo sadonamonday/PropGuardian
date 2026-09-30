@@ -80,9 +80,9 @@ bool CheckNewDay(RiskState &state)
 
 //+------------------------------------------------------------------+
 //| Pre-Trade Risk Gate — Multi-layer checks                          |
-//| ALL risk gates AND safety filters AND signal engine must agree.   |
+//| ALL risk gates AND safety filters must agree.                     |
 //+------------------------------------------------------------------+
-bool CanOpenTrade(RiskState &state, string symbol, SignalResult &outSignal)
+bool CanOpenTrade(RiskState &state, string symbol)
 {
    // Gate 1: Hard stop (emergency — all positions being closed)
    if(state.isHardStopped)
@@ -146,23 +146,14 @@ bool CanOpenTrade(RiskState &state, string symbol, SignalResult &outSignal)
       return false;
    }
 
-   // Gate 9: Signal Engine Gate
-   outSignal = CheckSignal(symbol);
-   if(outSignal.type == SIGNAL_NONE)
-   {
-      return false; // No trade signal
-   }
-
-   PrintFormat("[RISK] APPROVED: All risk gates, safety filters, and signal engine confirm trade for %s (%s)",
-               symbol, outSignal.type == SIGNAL_BUY ? "BUY" : "SELL");
+   PrintFormat("[RISK] APPROVED: All pre-trade risk gates and safety filters passed for %s", symbol);
    return true;
 }
 
-// Overload for general risk gate checking without returning signal struct
-bool CanOpenTrade(RiskState &state, string symbol)
+// Overload for compatibility where SignalResult parameter is provided
+bool CanOpenTrade(RiskState &state, string symbol, SignalResult &outSignal)
 {
-   SignalResult signal;
-   return CanOpenTrade(state, symbol, signal);
+   return CanOpenTrade(state, symbol);
 }
 
 //+------------------------------------------------------------------+
