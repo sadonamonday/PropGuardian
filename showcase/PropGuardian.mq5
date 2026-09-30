@@ -129,6 +129,34 @@ void OnTimer()
       // 5. Advance SMC Engine State Machine for all tradeable symbols (PropGuardian SMC Strategy v0.1)
       SMCEngine_OnTick();
 
+      // Cancel active pending limit order if its setup was invalidated
+      if(g_pendingOrderTicket > 0)
+      {
+         for(int s = 0; s < ArraySize(g_SMCSetups); s++)
+         {
+            if(g_SMCSetups[s].orderTicket == g_pendingOrderTicket && g_SMCSetups[s].state == SMC_INVALIDATED)
+            {
+               if(OrderSelect(g_pendingOrderTicket))
+               {
+                  MqlTradeRequest delRequest;
+                  MqlTradeResult  delResult;
+                  ZeroMemory(delRequest);
+                  ZeroMemory(delResult);
+                  delRequest.action = TRADE_ACTION_REMOVE;
+                  delRequest.order  = g_pendingOrderTicket;
+                  if(OrderSend(delRequest, delResult) && delResult.retcode == TRADE_RETCODE_DONE)
+                  {
+                     PrintFormat("[PENDING] Cancelled pending order #%d due to setup invalidation (%s)",
+                                 g_pendingOrderTicket, g_SMCSetups[s].invalidationReason);
+                  }
+               }
+               g_pendingOrderTicket     = 0;
+               g_pendingOrderExpiryTime = 0;
+               break;
+            }
+         }
+      }
+
       for(int i = 0; i < 5; i++)
       {
          string symbol = TradeableSymbols[i];

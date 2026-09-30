@@ -438,45 +438,52 @@ ENUM_SMC_STRUCTURE GetTimeframeStructure(string symbol, ENUM_TIMEFRAMES tf, int 
 }
 
 //+------------------------------------------------------------------+
-//| 4H POI DETECTION                                                 |
-//| Demand POI around 4H Swing Low / Supply POI around 4H Swing High |
+//| 4H POI PROVIDER INTERFACE & REGISTRATION                         |
+//| Implementation Limitation: Arbitrary ±point zones removed.       |
+//| Valid 4H POIs must be explicitly provided/registered by a        |
+//| verified POI provider engine. If no POI exists: NO TRADE.        |
 //+------------------------------------------------------------------+
+
+static SMCPOI g_Registered4HPOIs[];
+
+void Register4HPOI(const SMCPOI &poi)
+{
+   int total = ArraySize(g_Registered4HPOIs);
+   for(int i = 0; i < total; i++)
+   {
+      if(g_Registered4HPOIs[i].timeframe == poi.timeframe &&
+         g_Registered4HPOIs[i].type == poi.type &&
+         g_Registered4HPOIs[i].time == poi.time)
+      {
+         g_Registered4HPOIs[i] = poi;
+         return;
+      }
+   }
+   ArrayResize(g_Registered4HPOIs, total + 1);
+   g_Registered4HPOIs[total] = poi;
+}
+
+void ClearRegistered4HPOIs()
+{
+   ArrayFree(g_Registered4HPOIs);
+}
 
 bool GetActive4HPOI(string symbol, SMCPOI &outPOI)
 {
    ZeroMemory(outPOI);
    outPOI.isActive = false;
 
-   SMCSwing swingHigh, swingLow;
-   bool hasHigh = FindMostRecentSwingHigh(symbol, SMC_4H_Timeframe, 60, swingHigh);
-   bool hasLow  = FindMostRecentSwingLow(symbol, SMC_4H_Timeframe, 60, swingLow);
-
-   if(!hasHigh && !hasLow) return false;
-
-   double currentPrice = iClose(symbol, SMC_M15_Timeframe, 1);
-
-   // Select POI closest to current price or based on structural relationship
-   if(hasLow && (!hasHigh || MathAbs(currentPrice - swingLow.price) < MathAbs(currentPrice - swingHigh.price)))
+   int total = ArraySize(g_Registered4HPOIs);
+   for(int i = 0; i < total; i++)
    {
-      outPOI.type      = POI_TYPE_DEMAND;
-      outPOI.bottom    = swingLow.price - (3.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
-      outPOI.top       = swingLow.price + (15.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
-      outPOI.time      = swingLow.time;
-      outPOI.isActive  = true;
-      outPOI.timeframe = SMC_4H_Timeframe;
-      return true;
-   }
-   else if(hasHigh)
-   {
-      outPOI.type      = POI_TYPE_SUPPLY;
-      outPOI.top       = swingHigh.price + (3.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
-      outPOI.bottom    = swingHigh.price - (15.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
-      outPOI.time      = swingHigh.time;
-      outPOI.isActive  = true;
-      outPOI.timeframe = SMC_4H_Timeframe;
-      return true;
+      if(g_Registered4HPOIs[i].isActive && g_Registered4HPOIs[i].timeframe == SMC_4H_Timeframe)
+      {
+         outPOI = g_Registered4HPOIs[i];
+         return true;
+      }
    }
 
+   // If no verified production 4H POI is provided, return false (NO TRADE).
    return false;
 }
 
@@ -558,10 +565,18 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
 {
    ZeroMemory(outChochSwing);
 
+   int sweepBar = iBarShift(symbol, SMC_M15_Timeframe, sweepTime, false);
+   if(sweepBar < 0) sweepBar = 3;
+
+   // Start searching from the sweep bar into the past to locate the opposing swing
+   // immediately preceding the final directional leg into the sweep extreme.
+   int startBar = MathMax(3, sweepBar);
+   int maxLookback = startBar + 60;
+
    if(direction == SIGNAL_BUY)
    {
-      // Search for M15 Swing High preceding the sweep
-      for(int i = 3; i <= 50; i++)
+      // Traverse backward from sweep extreme to find the most recent confirmed Lower High preceding the final bearish leg
+      for(int i = startBar; i <= maxLookback; i++)
       {
          SMCSwing swing;
          if(Get5BarSwingHigh(symbol, SMC_M15_Timeframe, i, swing))
@@ -576,8 +591,8 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
    }
    else if(direction == SIGNAL_SELL)
    {
-      // Search for M15 Swing Low preceding the sweep
-      for(int i = 3; i <= 50; i++)
+      // Traverse backward from sweep extreme to find the most recent confirmed Higher Low preceding the final bullish leg
+      for(int i = startBar; i <= maxLookback; i++)
       {
          SMCSwing swing;
          if(Get5BarSwingLow(symbol, SMC_M15_Timeframe, i, swing))
@@ -753,16 +768,22 @@ int CountActiveSetups()
    return count;
 }
 
-// Helper to check M5 execution structure break (BODY close above M5 swing high for BUY / below M5 swing low for SELL)
+// Structural displacement proxy: directional M5 breakout candle + qualifying FVG.
+// Check M5 execution structure break (BODY close beyond M5 swing AND directionally matching candle)
 bool CheckM5ExecutionBreak(string symbol, ENUM_SIGNAL_TYPE direction, SMCSwing &outM5Swing)
 {
    ZeroMemory(outM5Swing);
+   double open1  = iOpen(symbol, SMC_M5_Timeframe, 1);
+   double close1 = iClose(symbol, SMC_M5_Timeframe, 1);
+
    if(direction == SIGNAL_BUY)
    {
+      // Breakout candle must be directionally bullish (Close > Open)
+      if(close1 <= open1) return false;
+
       SMCSwing m5High;
       if(FindMostRecentSwingHigh(symbol, SMC_M5_Timeframe, 30, m5High))
       {
-         double close1 = iClose(symbol, SMC_M5_Timeframe, 1);
          if(close1 > m5High.price)
          {
             outM5Swing = m5High;
@@ -772,10 +793,12 @@ bool CheckM5ExecutionBreak(string symbol, ENUM_SIGNAL_TYPE direction, SMCSwing &
    }
    else if(direction == SIGNAL_SELL)
    {
+      // Breakout candle must be directionally bearish (Close < Open)
+      if(close1 >= open1) return false;
+
       SMCSwing m5Low;
       if(FindMostRecentSwingLow(symbol, SMC_M5_Timeframe, 30, m5Low))
       {
-         double close1 = iClose(symbol, SMC_M5_Timeframe, 1);
          if(close1 < m5Low.price)
          {
             outM5Swing = m5Low;
@@ -920,21 +943,27 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          }
          setup.stopDistance = MathAbs(setup.entryPrice - setup.slPrice);
 
-         // Calculate Opposing Structural TP
+         // Calculate Opposing Structural TP (NO FIXED-R FALLBACK PERMITTED)
          SMCSwing oppSwing;
          if(setup.direction == SIGNAL_BUY)
          {
             if(FindMostRecentSwingHigh(symbol, SMC_M15_Timeframe, 50, oppSwing))
                setup.tpPrice = oppSwing.price;
             else
-               setup.tpPrice = setup.entryPrice + (setup.stopDistance * 3.0);
+            {
+               InvalidateSetup(setup, "No valid opposing M15 structural high target found for TP");
+               break;
+            }
          }
          else
          {
             if(FindMostRecentSwingLow(symbol, SMC_M15_Timeframe, 50, oppSwing))
                setup.tpPrice = oppSwing.price;
             else
-               setup.tpPrice = setup.entryPrice - (setup.stopDistance * 3.0);
+            {
+               InvalidateSetup(setup, "No valid opposing M15 structural low target found for TP");
+               break;
+            }
          }
 
          // Supporting OB
@@ -958,6 +987,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
       }
 
       case SMC_WAITING_FOR_FVG_RETRACE:
+      case SMC_ENTRY_SUBMITTED:
       {
          // Check FVG invalidation while waiting for order execution
          if(IsFVGInvalidated(symbol, setup.m5FVG))
