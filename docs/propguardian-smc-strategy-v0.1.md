@@ -32,6 +32,10 @@ PropGuardian SMC Strategy v0.1 implements a deterministic multi-timeframe Smart 
   - *Bullish OB*: Invalidated when a completed 4H candle closes below the OB low.
   - *Bearish OB*: Invalidated when a completed 4H candle closes above the OB high.
   - *FVG*: Invalidated when a completed candle closes through the C1 boundary (`close < fvg.bottom` for bullish, `close > fvg.top` for bearish).
+- **4H Order Block Definition**:
+  - *Bullish OB*: The final bearish/down-close candle before the qualifying bullish move (producing 4H BOS and an associated 4H FVG).
+  - *Bearish OB*: The final bullish/up-close candle before the qualifying bearish move (producing 4H BOS and an associated 4H FVG).
+  - *No Immediate-Next-Candle Constraint*: The qualifying FVG is not required to occur on the candle immediately adjacent to the OB, provided it occurs within the displacement move originating after the candidate OB candle without an intervening opposite-direction candle starting an unrelated move.
 
 ---
 
@@ -55,8 +59,9 @@ PropGuardian SMC Strategy v0.1 implements a deterministic multi-timeframe Smart 
   - *Bearish BOS*: Completed candle BODY closes below relevant confirmed swing low.
   - Wick-only breaks are treated as liquidity sweeps/interactions, NOT structural BOS.
 - **CHoCH (Change of Character)**: Structural reversal.
-  - *Bullish CHoCH*: Established bearish structure → M15 liquidity sweep occurs → Identify most recent confirmed Lower High directly originating the final downward leg into the sweep low → Completed M15 candle BODY closes above that lower high.
-  - *Bearish CHoCH*: Established bullish structure → M15 liquidity sweep occurs → Identify most recent confirmed Higher Low directly preceding the final upward leg into the sweep high → Completed M15 candle BODY closes below that higher low.
+  - *Bullish CHoCH*: Established bearish structure → M15 liquidity sweep occurs → Identify the confirmed 5-bar M15 Lower High (LH) that directly originates the final downward leg into the swept low → Completed M15 candle BODY closes above that lower high.
+  - *Bearish CHoCH*: Established bullish structure → M15 liquidity sweep occurs → Identify the confirmed 5-bar M15 Higher Low (HL) that directly precedes the final upward leg into the swept high → Completed M15 candle BODY closes below that higher low.
+  - *Selection Requirements*: CHoCH swing selection searches backward from the timestamp of the swept extreme (`sweepTime`) for the confirmed 5-bar M15 swing directly originating the final leg. Unconfirmed swings, current forming candles (bar 0), and post-sweep swings are strictly excluded. If no confirmed 5-bar M15 swing exists in available history prior to the sweep, the setup is safely invalidated.
 
 ---
 
