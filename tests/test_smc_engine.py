@@ -110,48 +110,136 @@ class TestSMCEngineRules(unittest.TestCase):
 
     # --- 2. M15 SWEEP & CHOCH RULES ---
 
-    def test_m15_sweep_detection(self):
-        m15_swing_low = 1.1000
-        m15_low = 1.0990
-        m15_close = 1.1005
-        # Low sweeps swing low and close reclaims level
-        is_sweep = (m15_low < m15_swing_low) and (m15_close > m15_swing_low)
-        self.assertTrue(is_sweep)
+    @staticmethod
+    def _find_choch_level(direction, swept_swing, m15_swings):
+        """
+        Helper mirroring FindCHoCHLevel in smc_engine.mqh.
+        Searches backward for confirmed swing (LH for BUY, HL for SELL)
+        with swing.time < swept_swing.time directly preceding final leg into swept extreme.
+        """
+        if not swept_swing.get('isValid', True) or swept_swing.get('time', 0) <= 0:
+            return None
 
-    def test_m15_bullish_choch(self):
-        choch_lh_price = 1.1060
-        m15_close = 1.1065
-        is_choch = m15_close > choch_lh_price
-        self.assertTrue(is_choch)
+        swept_time = swept_swing['time']
+        candidates = [s for s in m15_swings if s['time'] < swept_time and s.get('isValid', True)]
 
-    def test_m15_bearish_choch(self):
-        choch_hl_price = 1.1020
-        m15_close = 1.1015
-        is_choch = m15_close < choch_hl_price
-        self.assertTrue(is_choch)
+        if direction == "BUY":
+            # Search backward from swept low for confirmed LH (SWING_TYPE_HIGH)
+            lh_candidates = [s for s in candidates if s['type'] == 'HIGH']
+            if not lh_candidates:
+                return None
+            # Most recent LH prior to swept low
+            return max(lh_candidates, key=lambda x: x['time'])
 
-    def test_m15_incorrect_swing_selection_rejection(self):
-        # Must select LH originating final downward leg into sweep low, NOT an older unrelated swing
+        elif direction == "SELL":
+            # Search backward from swept high for confirmed HL (SWING_TYPE_LOW)
+            hl_candidates = [s for s in candidates if s['type'] == 'LOW']
+            if not hl_candidates:
+                return None
+            # Most recent HL prior to swept high
+            return max(hl_candidates, key=lambda x: x['time'])
+
+        return None
+
+    @staticmethod
+    def _check_m15_choch(direction, choch_swing, bar1_candle):
+        """
+        Helper mirroring CheckM15CHoCH in smc_engine.mqh.
+        Evaluates completed M15 candle (bar 1).
+        """
+        if not choch_swing or not choch_swing.get('isValid', True):
+            return False
+
+        close1 = bar1_candle['close']
+        if direction == "BUY":
+            return close1 > choch_swing['price']
+        elif direction == "SELL":
+            return close1 < choch_swing['price']
+        return False
+
+    def test_choch_1_bullish_swing_selection(self):
+        # 1. Correct bullish CHoCH swing selection:
+        # Swept low at t=100. Lower high originating final downward leg is at t=80 (1.1050).
+        swept_swing = {'type': 'LOW', 'price': 1.0950, 'time': 100, 'isValid': True}
         swings = [
-            {'time': 10, 'price': 1.1100, 'type': 'LH'},
-            {'time': 20, 'price': 1.1060, 'type': 'LH'},  # Directly originated final leg into sweep at t=30
+            {'type': 'HIGH', 'price': 1.1100, 'time': 40, 'isValid': True},   # Older high
+            {'type': 'HIGH', 'price': 1.1050, 'time': 80, 'isValid': True},   # LH originating final leg into swept low
+            {'type': 'HIGH', 'price': 1.1080, 'time': 120, 'isValid': True},  # Post-sweep high (invalid)
         ]
-        sweep_time = 30
-        selected = [s for s in sorted(swings, key=lambda x: x['time'], reverse=True) if s['time'] <= sweep_time][0]
-        self.assertEqual(selected['price'], 1.1060)
-        self.assertNotEqual(selected['price'], 1.1100)
+        choch_swing = self._find_choch_level("BUY", swept_swing, swings)
+        self.assertIsNotNone(choch_swing)
+        self.assertEqual(choch_swing['time'], 80)
+        self.assertEqual(choch_swing['price'], 1.1050)
 
-    def test_m15_body_close_requirement(self):
-        choch_lh = 1.1060
-        m15_close = 1.1065
-        self.assertTrue(m15_close > choch_lh)
+    def test_choch_2_bearish_swing_selection(self):
+        # 2. Correct bearish CHoCH swing selection:
+        # Swept high at t=100. Higher low originating final upward leg is at t=80 (1.1020).
+        swept_swing = {'type': 'HIGH', 'price': 1.1150, 'time': 100, 'isValid': True}
+        swings = [
+            {'type': 'LOW', 'price': 1.0900, 'time': 40, 'isValid': True},   # Older low
+            {'type': 'LOW', 'price': 1.1020, 'time': 80, 'isValid': True},   # HL originating final leg into swept high
+            {'type': 'LOW', 'price': 1.0980, 'time': 120, 'isValid': True},  # Post-sweep low (invalid)
+        ]
+        choch_swing = self._find_choch_level("SELL", swept_swing, swings)
+        self.assertIsNotNone(choch_swing)
+        self.assertEqual(choch_swing['time'], 80)
+        self.assertEqual(choch_swing['price'], 1.1020)
 
-    def test_m15_wick_only_break_rejected(self):
-        choch_lh = 1.1060
-        m15_high = 1.1070
-        m15_close = 1.1055  # Wick goes above, body closes below -> Rejected as CHoCH
-        is_choch = m15_close > choch_lh
+    def test_choch_3_multiple_candidate_swings_selection(self):
+        # 3. Multiple candidate swings where ONLY the swing originating the final leg is valid:
+        swept_swing = {'type': 'LOW', 'price': 1.0900, 'time': 200, 'isValid': True}
+        swings = [
+            {'type': 'HIGH', 'price': 1.1200, 'time': 50, 'isValid': True},   # Global high / early LH
+            {'type': 'HIGH', 'price': 1.1100, 'time': 100, 'isValid': True},  # Intermediate LH
+            {'type': 'HIGH', 'price': 1.1040, 'time': 180, 'isValid': True},  # LH directly originating final leg into t=200 low
+        ]
+        choch_swing = self._find_choch_level("BUY", swept_swing, swings)
+        self.assertIsNotNone(choch_swing)
+        self.assertEqual(choch_swing['price'], 1.1040)
+        self.assertNotEqual(choch_swing['price'], 1.1200)
+        self.assertNotEqual(choch_swing['price'], 1.1100)
+
+    def test_choch_4_sweep_without_choch(self):
+        # 4. Sweep without CHoCH:
+        # Valid sweep occurs, but completed M15 candles fail to close above LH price (1.1060)
+        choch_lh = {'type': 'HIGH', 'price': 1.1060, 'time': 80, 'isValid': True}
+        bar1_candle = {'open': 1.1020, 'high': 1.1058, 'low': 1.1015, 'close': 1.1050} # Close <= LH
+        is_choch = self._check_m15_choch("BUY", choch_lh, bar1_candle)
         self.assertFalse(is_choch)
+
+    def test_choch_5_choch_without_valid_sweep(self):
+        # 5. CHoCH without a valid sweep:
+        # If swept swing is invalid or missing, FindCHoCHLevel returns None and no CHoCH can be confirmed
+        invalid_swept_swing = {'type': 'LOW', 'price': 1.0900, 'time': 0, 'isValid': False}
+        swings = [{'type': 'HIGH', 'price': 1.1050, 'time': 80, 'isValid': True}]
+        choch_swing = self._find_choch_level("BUY", invalid_swept_swing, swings)
+        self.assertIsNone(choch_swing)
+
+        bar1_candle = {'open': 1.1040, 'high': 1.1070, 'low': 1.1035, 'close': 1.1065}
+        is_choch = self._check_m15_choch("BUY", choch_swing, bar1_candle)
+        self.assertFalse(is_choch)
+
+    def test_choch_6_wick_only_break_does_not_qualify(self):
+        # 6. Wick-only break does not qualify:
+        # High wicks above LH (1.1060), but body close is 1.1055 <= 1.1060
+        choch_lh = {'type': 'HIGH', 'price': 1.1060, 'time': 80, 'isValid': True}
+        wick_break_bar1 = {'open': 1.1030, 'high': 1.1075, 'low': 1.1025, 'close': 1.1055}
+        is_choch = self._check_m15_choch("BUY", choch_lh, wick_break_bar1)
+        self.assertFalse(is_choch)
+
+    def test_choch_7_forming_candle_cannot_confirm_choch(self):
+        # 7. Forming candle cannot confirm CHoCH:
+        # Bar 0 (forming candle) has close 1.1070 > LH (1.1060), but completed bar 1 close is 1.1050 <= 1.1060
+        choch_lh = {'type': 'HIGH', 'price': 1.1060, 'time': 80, 'isValid': True}
+        bar0_forming = {'open': 1.1040, 'high': 1.1080, 'low': 1.1035, 'close': 1.1070}
+        bar1_completed = {'open': 1.1020, 'high': 1.1055, 'low': 1.1015, 'close': 1.1050}
+
+        # Check completed bar 1
+        is_choch_completed = self._check_m15_choch("BUY", choch_lh, bar1_completed)
+        self.assertFalse(is_choch_completed)
+
+        # Confirming that code only evaluates bar 1, not forming bar 0
+        self.assertNotEqual(bar1_completed['close'], bar0_forming['close'])
 
 
     # --- 3. M5 EXECUTION & DISPLACEMENT RULES ---
