@@ -365,9 +365,11 @@ bool Get3BarSwingLow(string symbol, ENUM_TIMEFRAMES tf, int barIndex, SMCSwing &
 }
 
 // Get most recent confirmed swing on a given timeframe scanning backward
-bool FindMostRecentSwingHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, SMCSwing &outSwing)
+bool FindMostRecentSwingHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, SMCSwing &outSwing, int startBar = -1)
 {
-   int startBar = (tf == PERIOD_M5) ? 2 : 3;
+   if(startBar < 0)
+      startBar = (tf == PERIOD_M5) ? 2 : 3;
+
    for(int i = startBar; i <= maxLookbackBars; i++)
    {
       bool found = (tf == PERIOD_M5)
@@ -378,9 +380,11 @@ bool FindMostRecentSwingHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackB
    return false;
 }
 
-bool FindMostRecentSwingLow(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, SMCSwing &outSwing)
+bool FindMostRecentSwingLow(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, SMCSwing &outSwing, int startBar = -1)
 {
-   int startBar = (tf == PERIOD_M5) ? 2 : 3;
+   if(startBar < 0)
+      startBar = (tf == PERIOD_M5) ? 2 : 3;
+
    for(int i = startBar; i <= maxLookbackBars; i++)
    {
       bool found = (tf == PERIOD_M5)
@@ -840,8 +844,11 @@ bool CheckM15CHoCH(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &ch
 //+------------------------------------------------------------------+
 //| M5 DISPLACEMENT & FVG DETECTION (TIED TO DISPLACEMENT EVENT)     |
 //| 3-candle structure on M5:                                        |
-//|   Bullish: Close[1] > Open[1], Close[1] > SwingHigh, Low(C3) > High(C1)|
-//|   Bearish: Close[1] < Open[1], Close[1] < SwingLow, High(C3) < Low(C1)|
+//|   C1 = bar 3 (first candle)                                      |
+//|   C2 = bar 2 (middle / displacement candle)                      |
+//|   C3 = bar 1 (third candle, confirms FVG pattern after close)    |
+//|   Bullish: C2 Close > Open, C2 Close > SwingHigh, Low(C3) > High(C1)|
+//|   Bearish: C2 Close < Open, C2 Close < SwingLow, High(C3) < Low(C1)|
 //| Midpoint calculation = (Top + Bottom) / 2                        |
 //| Invalidation: Body close beyond Candle 1 boundary                |
 //+------------------------------------------------------------------+
@@ -852,26 +859,30 @@ bool CheckM5DisplacementAndFVG(string symbol, ENUM_SIGNAL_TYPE direction, SMCSwi
    ZeroMemory(outFVG);
    outFVG.isValid = false;
 
-   double open1  = iOpen(symbol, SMC_M5_Timeframe, 1);
-   double close1 = iClose(symbol, SMC_M5_Timeframe, 1);
+   // C3 is bar 1 (most recent completed candle)
+   // C2 is bar 2 (middle candle / displacement candle)
+   // C1 is bar 3 (first candle)
 
-   double highC1 = iHigh(symbol, SMC_M5_Timeframe, 3);
-   double lowC1  = iLow(symbol, SMC_M5_Timeframe, 3);
+   double openC2  = iOpen(symbol, SMC_M5_Timeframe, 2);
+   double closeC2 = iClose(symbol, SMC_M5_Timeframe, 2);
 
-   double highC3 = iHigh(symbol, SMC_M5_Timeframe, 1);
-   double lowC3  = iLow(symbol, SMC_M5_Timeframe, 1);
+   double highC1  = iHigh(symbol, SMC_M5_Timeframe, 3);
+   double lowC1   = iLow(symbol, SMC_M5_Timeframe, 3);
+
+   double highC3  = iHigh(symbol, SMC_M5_Timeframe, 1);
+   double lowC3   = iLow(symbol, SMC_M5_Timeframe, 1);
 
    if(direction == SIGNAL_BUY)
    {
-      // 1. Breakout candle must be directionally bullish (Close > Open)
-      if(close1 <= open1) return false;
+      // 1. C2 must be the bullish displacement candle (Close > Open)
+      if(closeC2 <= openC2) return false;
 
-      // 2. Body close above latest confirmed M5 swing high
+      // 2. C2 body close must break relevant confirmed M5 swing high (prior to C2, i.e. bar >= 3)
       SMCSwing m5High;
-      if(!FindMostRecentSwingHigh(symbol, SMC_M5_Timeframe, 30, m5High)) return false;
-      if(close1 <= m5High.price) return false;
+      if(!FindMostRecentSwingHigh(symbol, SMC_M5_Timeframe, 30, m5High, 3)) return false;
+      if(closeC2 <= m5High.price) return false;
 
-      // 3. Qualifying bullish FVG created by displacement sequence (Low(C3) > High(C1))
+      // 3. C3 completes 3-candle sequence creating valid bullish FVG (Low(C3) > High(C1))
       if(lowC3 <= highC1) return false;
 
       outM5Swing         = m5High;
@@ -889,15 +900,15 @@ bool CheckM5DisplacementAndFVG(string symbol, ENUM_SIGNAL_TYPE direction, SMCSwi
    }
    else if(direction == SIGNAL_SELL)
    {
-      // 1. Breakout candle must be directionally bearish (Close < Open)
-      if(close1 >= open1) return false;
+      // 1. C2 must be the bearish displacement candle (Close < Open)
+      if(closeC2 >= openC2) return false;
 
-      // 2. Body close below latest confirmed M5 swing low
+      // 2. C2 body close must break relevant confirmed M5 swing low (prior to C2, i.e. bar >= 3)
       SMCSwing m5Low;
-      if(!FindMostRecentSwingLow(symbol, SMC_M5_Timeframe, 30, m5Low)) return false;
-      if(close1 >= m5Low.price) return false;
+      if(!FindMostRecentSwingLow(symbol, SMC_M5_Timeframe, 30, m5Low, 3)) return false;
+      if(closeC2 >= m5Low.price) return false;
 
-      // 3. Qualifying bearish FVG created by displacement sequence (High(C3) < Low(C1))
+      // 3. C3 completes 3-candle sequence creating valid bearish FVG (High(C3) < Low(C1))
       if(highC3 >= lowC1) return false;
 
       outM5Swing         = m5Low;
@@ -1115,12 +1126,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          }
          else
          {
-            SMCFVG fvg;
-            if(FindM5FVG(symbol, setup.direction, fvg))
-            {
-               setup.m5FVG = fvg;
-               setup.state = SMC_FVG_DETECTED;
-            }
+            InvalidateSetup(setup, "M5 FVG invalid");
          }
          break;
       }

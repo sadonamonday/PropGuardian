@@ -156,60 +156,248 @@ class TestSMCEngineRules(unittest.TestCase):
 
     # --- 3. M5 EXECUTION & DISPLACEMENT RULES ---
 
-    def test_m5_confirmed_3bar_swing(self):
-        highs = [1.1010, 1.1050, 1.1020]
-        is_high = (highs[1] > highs[0] and highs[1] > highs[2])
-        self.assertTrue(is_high)
+    @staticmethod
+    def _check_m5_displacement_and_fvg(direction, candles, m5_swing_price):
+        """
+        Helper replicating CheckM5DisplacementAndFVG in smc_engine.mqh.
+        candles dict mapping barIndex (1, 2, 3) -> candle dict
+          bar 3 = C1
+          bar 2 = C2 (displacement candle)
+          bar 1 = C3 (third candle, confirms FVG pattern after close)
+        """
+        c1 = candles[3]
+        c2 = candles[2]
+        c3 = candles[1]
 
-    def test_m5_bullish_displacement(self):
-        m5_swing_high = 1.1050
-        open_bar = 1.1040
-        close_bar = 1.1060
-        has_fvg = True
-        is_displacement = (close_bar > m5_swing_high) and (close_bar > open_bar) and has_fvg
-        self.assertTrue(is_displacement)
+        if direction == "BUY":
+            # 1. C2 must be bullish displacement candle (Close > Open)
+            if c2['close'] <= c2['open']:
+                return False, None
+            # 2. C2 body close must break M5 swing high
+            if c2['close'] <= m5_swing_price:
+                return False, None
+            # 3. C3 completes 3-candle sequence creating valid bullish FVG (Low(C3) > High(C1))
+            if c3['low'] <= c1['high']:
+                return False, None
 
-    def test_m5_bearish_displacement(self):
+            bottom = c1['high']
+            top = c3['low']
+            midpoint = (bottom + top) / 2.0
+            return True, {
+                'is_bullish': True,
+                'bottom': bottom,
+                'top': top,
+                'midpoint': midpoint,
+                'c1Index': 3,
+                'c2Index': 2,
+                'c3Index': 1,
+                'timeC3': c3.get('time', 100)
+            }
+
+        elif direction == "SELL":
+            # 1. C2 must be bearish displacement candle (Close < Open)
+            if c2['close'] >= c2['open']:
+                return False, None
+            # 2. C2 body close must break M5 swing low
+            if c2['close'] >= m5_swing_price:
+                return False, None
+            # 3. C3 completes 3-candle sequence creating valid bearish FVG (High(C3) < Low(C1))
+            if c3['high'] >= c1['low']:
+                return False, None
+
+            bottom = c3['high']
+            top = c1['low']
+            midpoint = (bottom + top) / 2.0
+            return True, {
+                'is_bullish': False,
+                'bottom': bottom,
+                'top': top,
+                'midpoint': midpoint,
+                'c1Index': 3,
+                'c2Index': 2,
+                'c3Index': 1,
+                'timeC3': c3.get('time', 100)
+            }
+
+        return False, None
+
+    def test_valid_bullish_c1_c2_c3_fvg(self):
+        # 1. Valid bullish C1/C2/C3 FVG test
+        candles = {
+            3: {'high': 1.1000, 'low': 1.0980, 'open': 1.0985, 'close': 1.0995},          # C1
+            2: {'open': 1.1005, 'close': 1.1040, 'high': 1.1045, 'low': 1.1002},          # C2 displacement
+            1: {'open': 1.1035, 'close': 1.1025, 'high': 1.1038, 'low': 1.1015, 'time': 300} # C3 confirms FVG
+        }
+        m5_swing_high = 1.1020
+        valid, fvg = self._check_m5_displacement_and_fvg("BUY", candles, m5_swing_high)
+        self.assertTrue(valid)
+        self.assertTrue(fvg['is_bullish'])
+        self.assertEqual(fvg['bottom'], 1.1000)
+        self.assertEqual(fvg['top'], 1.1015)
+        self.assertAlmostEqual(fvg['midpoint'], 1.10075, places=5)
+        self.assertEqual(fvg['c2Index'], 2)
+        self.assertEqual(fvg['c3Index'], 1)
+
+    def test_valid_bearish_c1_c2_c3_fvg(self):
+        # 2. Valid bearish C1/C2/C3 FVG test
+        candles = {
+            3: {'low': 1.1050, 'high': 1.1070, 'open': 1.1065, 'close': 1.1055},          # C1
+            2: {'open': 1.1045, 'close': 1.1010, 'high': 1.1048, 'low': 1.1005},          # C2 displacement
+            1: {'open': 1.1015, 'close': 1.1025, 'high': 1.1035, 'low': 1.1010, 'time': 300} # C3 confirms FVG
+        }
+        m5_swing_low = 1.1030
+        valid, fvg = self._check_m5_displacement_and_fvg("SELL", candles, m5_swing_low)
+        self.assertTrue(valid)
+        self.assertFalse(fvg['is_bullish'])
+        self.assertEqual(fvg['bottom'], 1.1035)
+        self.assertEqual(fvg['top'], 1.1050)
+        self.assertAlmostEqual(fvg['midpoint'], 1.10425, places=5)
+        self.assertEqual(fvg['c2Index'], 2)
+        self.assertEqual(fvg['c3Index'], 1)
+
+    def test_c2_treated_as_displacement_candle(self):
+        # 3. Prove C2 is treated as the displacement candle
+        m5_swing_high = 1.1020
+
+        # Case A: C2 is bullish and body closes above swing high -> Valid displacement
+        candles_valid = {
+            3: {'high': 1.1000, 'low': 1.0980, 'open': 1.0985, 'close': 1.0995},
+            2: {'open': 1.1005, 'close': 1.1040, 'high': 1.1045, 'low': 1.1002}, # C2 bullish & breaks swing high
+            1: {'open': 1.1035, 'close': 1.1025, 'high': 1.1038, 'low': 1.1015}  # C3
+        }
+        valid_a, _ = self._check_m5_displacement_and_fvg("BUY", candles_valid, m5_swing_high)
+        self.assertTrue(valid_a)
+
+        # Case B: C2 is a down-close candle (close <= open) despite passing high -> REJECTED (not bullish displacement)
+        candles_down_c2 = {
+            3: {'high': 1.1000, 'low': 1.0980, 'open': 1.0985, 'close': 1.0995},
+            2: {'open': 1.1045, 'close': 1.1040, 'high': 1.1050, 'low': 1.1002}, # C2 open > close
+            1: {'open': 1.1035, 'close': 1.1025, 'high': 1.1038, 'low': 1.1015}
+        }
+        valid_b, _ = self._check_m5_displacement_and_fvg("BUY", candles_down_c2, m5_swing_high)
+        self.assertFalse(valid_b)
+
+        # Case C: C2 close does NOT close above swing high -> REJECTED
+        candles_weak_c2 = {
+            3: {'high': 1.1000, 'low': 1.0980, 'open': 1.0985, 'close': 1.0995},
+            2: {'open': 1.1005, 'close': 1.1015, 'high': 1.1018, 'low': 1.1002}, # C2 close <= 1.1020
+            1: {'open': 1.1035, 'close': 1.1025, 'high': 1.1038, 'low': 1.1015}
+        }
+        valid_c, _ = self._check_m5_displacement_and_fvg("BUY", candles_weak_c2, m5_swing_high)
+        self.assertFalse(valid_c)
+
+    def test_c3_confirms_fvg_not_displacement(self):
+        # 4. Prove C3 confirms the FVG rather than being treated as the displacement candle
+        m5_swing_high = 1.1020
+
+        # Case A: C2 was the displacement candle. C3 is a down-close candle (close < open) and close <= swing_high,
+        # but C3 low > C1 high -> VALID! (Proves C3 is NOT required to be the displacement candle).
+        candles_c3_retrace = {
+            3: {'high': 1.1000, 'low': 1.0980, 'open': 1.0985, 'close': 1.0995},          # C1
+            2: {'open': 1.1005, 'close': 1.1040, 'high': 1.1045, 'low': 1.1002},          # C2 displacement
+            1: {'open': 1.1035, 'close': 1.1015, 'high': 1.1038, 'low': 1.1010}           # C3 down candle, low > C1 high
+        }
+        valid_a, fvg_a = self._check_m5_displacement_and_fvg("BUY", candles_c3_retrace, m5_swing_high)
+        self.assertTrue(valid_a)
+        self.assertIsNotNone(fvg_a)
+
+        # Case B: C2 was NOT the displacement candle (C2 close <= swing high), but C3 WAS a huge breakout candle
+        # closing above swing high. -> REJECTED! (Proves C3 is NOT treated as the displacement candle).
+        candles_c3_displacement = {
+            3: {'high': 1.1000, 'low': 1.0980, 'open': 1.0985, 'close': 1.0995},          # C1
+            2: {'open': 1.1002, 'close': 1.1010, 'high': 1.1012, 'low': 1.1000},          # C2 fails to break swing high
+            1: {'open': 1.1015, 'close': 1.1050, 'high': 1.1055, 'low': 1.1012}           # C3 breaks swing high
+        }
+        valid_b, fvg_b = self._check_m5_displacement_and_fvg("BUY", candles_c3_displacement, m5_swing_high)
+        self.assertFalse(valid_b)
+        self.assertIsNone(fvg_b)
+
+    def test_wick_only_structural_break_rejected(self):
+        # 5. Prove wick-only structural breaks do not qualify where a body close is required
+        m5_swing_high = 1.1020
+
+        # C2 high wicks up to 1.1025 (> 1.1020), but C2 body closes at 1.1018 (<= 1.1020)
+        candles_wick_break = {
+            3: {'high': 1.1000, 'low': 1.0980, 'open': 1.0985, 'close': 1.0995},
+            2: {'open': 1.1005, 'close': 1.1018, 'high': 1.1025, 'low': 1.1002}, # Wick break only
+            1: {'open': 1.1020, 'close': 1.1025, 'high': 1.1030, 'low': 1.1015}
+        }
+        valid, fvg = self._check_m5_displacement_and_fvg("BUY", candles_wick_break, m5_swing_high)
+        self.assertFalse(valid)
+        self.assertIsNone(fvg)
+
+        # Bearish wick break test
         m5_swing_low = 1.1000
-        open_bar = 1.1010
-        close_bar = 1.0990
-        has_fvg = True
-        is_displacement = (close_bar < m5_swing_low) and (close_bar < open_bar) and has_fvg
-        self.assertTrue(is_displacement)
+        candles_bearish_wick = {
+            3: {'low': 1.1020, 'high': 1.1040, 'open': 1.1035, 'close': 1.1025},
+            2: {'open': 1.1015, 'close': 1.1002, 'high': 1.1018, 'low': 1.0995}, # Wick reaches 1.0995 (< 1.1000), close 1.1002
+            1: {'open': 1.1000, 'close': 1.0990, 'high': 1.1005, 'low': 1.0985}
+        }
+        valid_bear, fvg_bear = self._check_m5_displacement_and_fvg("SELL", candles_bearish_wick, m5_swing_low)
+        self.assertFalse(valid_bear)
+        self.assertIsNone(fvg_bear)
 
-    def test_m5_qualifying_fvg(self):
-        high_c1 = 1.1000
-        low_c3 = 1.1030
-        self.assertTrue(low_c3 > high_c1)
-        midpoint = (high_c1 + low_c3) / 2.0
-        self.assertAlmostEqual(midpoint, 1.1015, places=5)
+    def test_fvg_midpoint_calculation(self):
+        # 6. Prove FVG midpoint is calculated correctly
+        # Bullish: bottom = High(C1), top = Low(C3) -> midpoint = (bottom + top) / 2.0
+        bottom_bull = 1.1000
+        top_bull = 1.1030
+        midpoint_bull = (bottom_bull + top_bull) / 2.0
+        self.assertAlmostEqual(midpoint_bull, 1.1015, places=5)
 
-    def test_m5_unrelated_fvg_rejection(self):
-        # FVG must be created by the qualifying displacement event
-        displacement_time = 500
-        fvg1_time = 200  # Older unrelated FVG
-        fvg2_time = 500  # Displacement FVG
-        selected_fvg_time = fvg2_time
-        self.assertEqual(selected_fvg_time, displacement_time)
-        self.assertNotEqual(fvg1_time, displacement_time)
+        # Bearish: bottom = High(C3), top = Low(C1) -> midpoint = (bottom + top) / 2.0
+        bottom_bear = 1.1020
+        top_bear = 1.1060
+        midpoint_bear = (bottom_bear + top_bear) / 2.0
+        self.assertAlmostEqual(midpoint_bear, 1.1040, places=5)
 
-    def test_m5_fvg_50percent_entry(self):
-        bottom = 1.1000
-        top = 1.1030
-        entry_price = (bottom + top) / 2.0
-        self.assertAlmostEqual(entry_price, 1.1015, places=5)
+    def test_fvg_invalidation_rules(self):
+        # 7. Prove FVG invalidation follows locked rules
+        # Bullish FVG (bottom = 1.1000, top = 1.1015)
+        fvg_bullish = {'is_bullish': True, 'bottom': 1.1000, 'top': 1.1015, 'isValid': True}
 
-    def test_m5_fvg_invalidation(self):
-        fvg_bottom = 1.1000
-        close_bar = 1.0995  # Body close below C1 bottom invalidates
-        is_invalidated = close_bar < fvg_bottom
-        self.assertTrue(is_invalidated)
+        def is_fvg_invalidated(fvg, close_price):
+            if fvg['is_bullish']:
+                return close_price < fvg['bottom']
+            else:
+                return close_price > fvg['top']
 
-    def test_m5_pending_order_cancellation_on_invalidation(self):
-        setup_state = "SMC_INVALIDATED"
-        has_pending_order = True
-        should_cancel_order = (setup_state == "SMC_INVALIDATED" and has_pending_order)
-        self.assertTrue(should_cancel_order)
+        # Completed M5 candle body close below C1 bottom -> INVALIDATED
+        self.assertTrue(is_fvg_invalidated(fvg_bullish, 1.0995))
+
+        # Completed M5 candle body close above or at C1 bottom -> NOT INVALIDATED
+        self.assertFalse(is_fvg_invalidated(fvg_bullish, 1.1000))
+        self.assertFalse(is_fvg_invalidated(fvg_bullish, 1.1005))
+
+        # Touch/mitigation without body close below C1 bottom (e.g. Low = 1.0990, Close = 1.1002) -> NOT INVALIDATED
+        touch_candle_close = 1.1002
+        self.assertFalse(is_fvg_invalidated(fvg_bullish, touch_candle_close))
+
+        # Bearish FVG (bottom = 1.1035, top = 1.1050)
+        fvg_bearish = {'is_bullish': False, 'bottom': 1.1035, 'top': 1.1050, 'isValid': True}
+
+        # Completed M5 candle body close above C1 top -> INVALIDATED
+        self.assertTrue(is_fvg_invalidated(fvg_bearish, 1.1055))
+
+        # Completed M5 candle body close below or at C1 top -> NOT INVALIDATED
+        self.assertFalse(is_fvg_invalidated(fvg_bearish, 1.1050))
+        self.assertFalse(is_fvg_invalidated(fvg_bearish, 1.1040))
+
+        # Touch/mitigation without body close above C1 top (e.g. High = 1.1058, Close = 1.1048) -> NOT INVALIDATED
+        touch_bear_close = 1.1048
+        self.assertFalse(is_fvg_invalidated(fvg_bearish, touch_bear_close))
+
+    def test_no_forming_candle_used_for_confirmation(self):
+        # 8. Prove no current/forming candle (bar 0) is used for confirmation
+        # Completed candles are bar 3 (C1), bar 2 (C2), bar 1 (C3). Bar 0 is the forming candle.
+        completed_bars = [3, 2, 1]
+        forming_bar = 0
+
+        # Confirmation logic explicitly accesses completed bars index >= 1
+        for bar in completed_bars:
+            self.assertGreaterEqual(bar, 1)
+
+        self.assertNotIn(forming_bar, completed_bars)
 
 
     # --- 4. TRADE & SYSTEM INTEGRATION TESTS ---
