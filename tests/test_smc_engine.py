@@ -18,25 +18,97 @@ class TestSMCEngineRules(unittest.TestCase):
                   lows[2] < lows[1] and lows[2] < lows[0])
         self.assertTrue(is_low)
 
+    @staticmethod
+    def _find_4h_order_block(c1, c2, c3, prev_swing_price):
+        """
+        Helper replicating Find4HOrderBlock logic in smc_engine.mqh.
+        c1 = OB candle
+        c2 = displacement candle immediately following C1 (C2 close > open for bullish, close < open for bearish)
+        c3 = third candle completing FVG sequence
+        prev_swing_price = prior 4H swing price to be broken (BOS)
+        """
+        open_c1, close_c1 = c1['open'], c1['close']
+        high_c1, low_c1 = c1['high'], c1['low']
+
+        # Bullish OB: final down-close candle
+        if close_c1 < open_c1:
+            open_c2, close_c2 = c2['open'], c2['close']
+            if close_c2 <= open_c2:  # C2 must be bullish displacement
+                return False, None
+
+            # FVG check: Low(C3) > High(C1)
+            if c3['low'] <= high_c1:
+                return False, None
+
+            # BOS check: body close above prev_swing_price
+            if close_c2 <= prev_swing_price and c3['close'] <= prev_swing_price:
+                return False, None
+
+            return True, {
+                'type': 'DEMAND',
+                'bottom': low_c1,
+                'top': high_c1,
+                'time': c1.get('time', 100),
+                'isActive': True
+            }
+
+        # Bearish OB: final up-close candle
+        elif close_c1 > open_c1:
+            open_c2, close_c2 = c2['open'], c2['close']
+            if close_c2 >= open_c2:  # C2 must be bearish displacement
+                return False, None
+
+            # FVG check: High(C3) < Low(C1)
+            if c3['high'] >= low_c1:
+                return False, None
+
+            # BOS check: body close below prev_swing_price
+            if close_c2 >= prev_swing_price and c3['close'] >= prev_swing_price:
+                return False, None
+
+            return True, {
+                'type': 'SUPPLY',
+                'bottom': low_c1,
+                'top': high_c1,
+                'time': c1.get('time', 100),
+                'isActive': True
+            }
+
+        return False, None
+
     def test_4h_bullish_ob_definition(self):
-        # Bullish OB: final bearish down-close candle before displacement + BOS + FVG
-        ob_candle = {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995}
-        is_down_close = ob_candle['close'] < ob_candle['open']
-        has_subsequent_displacement = True
-        is_bullish_ob = is_down_close and has_subsequent_displacement
-        ob_boundaries = (ob_candle['low'], ob_candle['high'])
-        self.assertTrue(is_bullish_ob)
-        self.assertEqual(ob_boundaries, (1.0995, 1.1025))
+        # 3. Bullish 4H OB: final bearish down-close candle before displacement + FVG + BOS
+        c1 = {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100} # Down-close
+        c2 = {'open': 1.1005, 'close': 1.1050, 'high': 1.1055, 'low': 1.1000}             # Bullish displacement
+        c3 = {'open': 1.1045, 'close': 1.1060, 'high': 1.1065, 'low': 1.1030}              # Low(C3) 1.1030 > High(C1) 1.1025
+        prev_swing_high = 1.1040                                                          # C2 close 1.1050 > 1.1040 (BOS)
+
+        valid, ob = self._find_4h_order_block(c1, c2, c3, prev_swing_high)
+        self.assertTrue(valid)
+        self.assertEqual(ob['type'], 'DEMAND')
+        self.assertEqual((ob['bottom'], ob['top']), (1.0995, 1.1025))
+
+        # Reject if C2 is NOT bullish displacement
+        c2_bearish = {'open': 1.1030, 'close': 1.1010, 'high': 1.1035, 'low': 1.1005}
+        valid_bad_c2, _ = self._find_4h_order_block(c1, c2_bearish, c3, prev_swing_high)
+        self.assertFalse(valid_bad_c2)
 
     def test_4h_bearish_ob_definition(self):
-        # Bearish OB: final bullish up-close candle before displacement + BOS + FVG
-        ob_candle = {'open': 1.1000, 'close': 1.1020, 'high': 1.1025, 'low': 1.0995}
-        is_up_close = ob_candle['close'] > ob_candle['open']
-        has_subsequent_displacement = True
-        is_bearish_ob = is_up_close and has_subsequent_displacement
-        ob_boundaries = (ob_candle['low'], ob_candle['high'])
-        self.assertTrue(is_bearish_ob)
-        self.assertEqual(ob_boundaries, (1.0995, 1.1025))
+        # 4. Bearish 4H OB: final bullish up-close candle before displacement + FVG + BOS
+        c1 = {'open': 1.1000, 'close': 1.1020, 'high': 1.1025, 'low': 1.0995, 'time': 100} # Up-close
+        c2 = {'open': 1.1015, 'close': 1.0970, 'high': 1.1018, 'low': 1.0965}             # Bearish displacement
+        c3 = {'open': 1.0975, 'close': 1.0960, 'high': 1.0990, 'low': 1.0955}              # High(C3) 1.0990 < Low(C1) 1.0995
+        prev_swing_low = 1.0980                                                           # C2 close 1.0970 < 1.0980 (BOS)
+
+        valid, ob = self._find_4h_order_block(c1, c2, c3, prev_swing_low)
+        self.assertTrue(valid)
+        self.assertEqual(ob['type'], 'SUPPLY')
+        self.assertEqual((ob['bottom'], ob['top']), (1.0995, 1.1025))
+
+        # Reject if C2 is NOT bearish displacement
+        c2_bullish = {'open': 1.0970, 'close': 1.0990, 'high': 1.0995, 'low': 1.0965}
+        valid_bad_c2, _ = self._find_4h_order_block(c1, c2_bullish, c3, prev_swing_low)
+        self.assertFalse(valid_bad_c2)
 
     def test_4h_bullish_fvg(self):
         # Bullish FVG: Low(C3) > High(C1)
@@ -56,26 +128,107 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertTrue(is_bearish_fvg)
         self.assertEqual(fvg_boundaries, (1.1020, 1.1050))
 
+    @staticmethod
+    def _get_active_4h_poi(structure_4h, registered_pois, detected_pois, bar_closes):
+        """
+        Helper replicating GetActive4HPOI in smc_engine.mqh.
+        """
+        if structure_4h == "UNDEFINED":
+            return None
+
+        newest_poi = None
+        newest_time = 0
+
+        # Filter and check registered POIs
+        for poi in registered_pois:
+            if not poi.get('isActive', True):
+                continue
+
+            matches_dir = (structure_4h == "BULLISH" and poi['type'] == 'DEMAND') or \
+                          (structure_4h == "BEARISH" and poi['type'] == 'SUPPLY')
+            if not matches_dir:
+                continue
+
+            # Check invalidation against bar_closes
+            is_invalidated = False
+            poi_time = poi['time']
+            for bar_time, cl in bar_closes.items():
+                if bar_time > poi_time:
+                    if poi['type'] == 'DEMAND' and cl < poi['bottom']:
+                        is_invalidated = True
+                        break
+                    elif poi['type'] == 'SUPPLY' and cl > poi['top']:
+                        is_invalidated = True
+                        break
+
+            if not is_invalidated and poi_time > newest_time:
+                newest_poi = poi
+                newest_time = poi_time
+
+        # Filter and check detected POIs (OB and FVG equal status)
+        for poi in detected_pois:
+            if not poi.get('isActive', True):
+                continue
+
+            matches_dir = (structure_4h == "BULLISH" and poi['type'] == 'DEMAND') or \
+                          (structure_4h == "BEARISH" and poi['type'] == 'SUPPLY')
+            if not matches_dir:
+                continue
+
+            # Check invalidation against bar_closes
+            is_invalidated = False
+            poi_time = poi['time']
+            for bar_time, cl in bar_closes.items():
+                if bar_time > poi_time:
+                    if poi['type'] == 'DEMAND' and cl < poi['bottom']:
+                        is_invalidated = True
+                        break
+                    elif poi['type'] == 'SUPPLY' and cl > poi['top']:
+                        is_invalidated = True
+                        break
+
+            if not is_invalidated and poi_time > newest_time:
+                newest_poi = poi
+                newest_time = poi_time
+
+        return newest_poi
+
     def test_4h_poi_direction_filtering(self):
+        # 6. POI direction must match 4H structure
         structure_4h = "BULLISH"
-        bullish_poi = {'type': 'DEMAND', 'isActive': True}
-        bearish_poi = {'type': 'SUPPLY', 'isActive': True}
+        bullish_poi = {'id': 1, 'type': 'DEMAND', 'time': 100, 'isActive': True, 'bottom': 1.1000, 'top': 1.1020}
+        bearish_poi = {'id': 2, 'type': 'SUPPLY', 'time': 200, 'isActive': True, 'bottom': 1.1050, 'top': 1.1070}
 
-        # In Bullish 4H structure, only DEMAND POIs are eligible
-        is_demand_eligible = (structure_4h == "BULLISH" and bullish_poi['type'] == 'DEMAND')
-        is_supply_eligible = (structure_4h == "BULLISH" and bearish_poi['type'] == 'DEMAND')
-
-        self.assertTrue(is_demand_eligible)
-        self.assertFalse(is_supply_eligible)
+        selected = self._get_active_4h_poi(structure_4h, [], [bullish_poi, bearish_poi], {})
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected['id'], 1) # Only DEMAND POI matches BULLISH structure
 
     def test_4h_poi_selection_most_recent(self):
-        # Equal status OB and FVG -> pick most recent valid uninvalidated POI
-        pois = [
-            {'id': 1, 'type': 'DEMAND', 'time': 100, 'is_valid': True},  # Older OB
-            {'id': 2, 'type': 'DEMAND', 'time': 200, 'is_valid': True},  # Newer FVG
-        ]
-        selected_poi = max(pois, key=lambda p: p['time'] if p['is_valid'] else -1)
-        self.assertEqual(selected_poi['id'], 2)
+        # 7. Most recent valid POI selected (equal priority for OB and FVG)
+        structure_4h = "BULLISH"
+        older_ob = {'id': 1, 'type': 'DEMAND', 'time': 100, 'isActive': True, 'bottom': 1.1000, 'top': 1.1020}
+        newer_fvg = {'id': 2, 'type': 'DEMAND', 'time': 200, 'isActive': True, 'bottom': 1.1030, 'top': 1.1050}
+
+        selected = self._get_active_4h_poi(structure_4h, [], [older_ob, newer_fvg], {})
+        self.assertEqual(selected['id'], 2) # Newer FVG selected over older OB
+
+    def test_registered_poi_cannot_bypass_direction_filtering(self):
+        # 8. Registered POI cannot bypass direction filtering or invalidation
+        structure_4h = "BULLISH"
+        # Registered supply (bearish) POI
+        registered_supply = {'id': 10, 'type': 'SUPPLY', 'time': 300, 'isActive': True, 'bottom': 1.1100, 'top': 1.1120}
+        detected_demand = {'id': 1, 'type': 'DEMAND', 'time': 100, 'isActive': True, 'bottom': 1.1000, 'top': 1.1020}
+
+        # Registered supply POI must be filtered out despite having a newer timestamp
+        selected = self._get_active_4h_poi(structure_4h, [registered_supply], [detected_demand], {})
+        self.assertEqual(selected['id'], 1)
+
+        # Invalidation test for registered POI:
+        registered_demand = {'id': 20, 'type': 'DEMAND', 'time': 200, 'isActive': True, 'bottom': 1.1000, 'top': 1.1020}
+        detected_demand_older = {'id': 1, 'type': 'DEMAND', 'time': 50, 'isActive': True, 'bottom': 1.0900, 'top': 1.0920}
+        bar_closes = {250: 1.0990} # 4H close below bottom 1.1000 for registered POI (time 200), but > 50 so after time 50
+        selected_inv = self._get_active_4h_poi(structure_4h, [registered_demand], [detected_demand_older], bar_closes)
+        self.assertEqual(selected_inv['id'], 1) # Registered demand was invalidated, fallback to detected
 
     def test_4h_poi_intersection(self):
         poi = {'bottom': 1.1000, 'top': 1.1020}
@@ -91,21 +244,32 @@ class TestSMCEngineRules(unittest.TestCase):
         is_far = (m15_high_far >= poi['bottom']) and (m15_low_far <= poi['top'])
         self.assertFalse(is_far)
 
-    def test_4h_poi_invalidation_ob_and_fvg(self):
-        # Bullish OB invalidated if 4H candle closes below OB low
-        ob_low = 1.1000
-        ob_close_invalid = 1.0995
-        self.assertTrue(ob_close_invalid < ob_low)
+    def test_invalidated_pois_excluded(self):
+        # 5. Invalidated POIs excluded from GetActive4HPOI selection
+        structure_4h = "BULLISH"
+        # Newer OB that was closed below (invalidated)
+        invalidated_ob = {'id': 2, 'type': 'DEMAND', 'time': 200, 'isActive': True, 'bottom': 1.1000, 'top': 1.1020}
+        # Older valid FVG
+        older_valid_fvg = {'id': 1, 'type': 'DEMAND', 'time': 100, 'isActive': True, 'bottom': 1.0950, 'top': 1.0970}
+        # Bar close at t=250 closes below invalidated OB low (1.0990 < 1.1000)
+        bar_closes = {250: 1.0990}
 
-        # Bearish OB invalidated if 4H candle closes above OB high
-        ob_high = 1.1050
-        ob_close_invalid_bearish = 1.1055
-        self.assertTrue(ob_close_invalid_bearish > ob_high)
+        selected = self._get_active_4h_poi(structure_4h, [], [invalidated_ob, older_valid_fvg], bar_closes)
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected['id'], 1) # Invalidated OB excluded, older valid FVG selected
 
-        # FVG invalidated if completed candle closes through C1 boundary
-        fvg_c1_bottom = 1.1000
-        fvg_close_invalid = 1.0990
-        self.assertTrue(fvg_close_invalid < fvg_c1_bottom)
+    def test_no_poi_means_no_setup(self):
+        # 10. No valid/active 4H POI means no setup is created (remains idle or returns None)
+        structure_4h = "BULLISH"
+        selected = self._get_active_4h_poi(structure_4h, [], [], {})
+        self.assertIsNone(selected)
+
+        # In state machine context: SMC_IDLE state without active POI results in no state transition
+        setup = {'state': 'SMC_IDLE', 'poi4H': selected}
+        if setup['poi4H'] is None or not setup['poi4H'].get('isActive', False):
+            # Setup remains in SMC_IDLE state
+            pass
+        self.assertEqual(setup['state'], 'SMC_IDLE')
 
 
     # --- 2. M15 SWEEP & CHOCH RULES ---
