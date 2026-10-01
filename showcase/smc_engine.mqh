@@ -543,7 +543,7 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
 {
    ZeroMemory(outPOI);
 
-   if(obBarIndex < 1) return false;
+   if(obBarIndex < 3) return false;
 
    double openOB  = iOpen(symbol, SMC_4H_Timeframe, obBarIndex);
    double closeOB = iClose(symbol, SMC_4H_Timeframe, obBarIndex);
@@ -555,23 +555,31 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
    // Bullish OB: final down-close candle before qualifying bullish displacement (producing FVG & BOS/CHoCH)
    if(closeOB < openOB)
    {
-      bool hasFVG = false;
-      bool hasBOS = false;
+      // C2 is the aggressive displacement candle directly following C1 (the OB bar obBarIndex)
+      int c2BarIndex = obBarIndex - 1;
+      int c3BarIndex = obBarIndex - 2;
+      double openC2  = iOpen(symbol, SMC_4H_Timeframe, c2BarIndex);
+      double closeC2 = iClose(symbol, SMC_4H_Timeframe, c2BarIndex);
+      double lowC3   = iLow(symbol, SMC_4H_Timeframe, c3BarIndex);
 
-      for(int k = obBarIndex - 1; k >= 1; k--)
+      // 1. C2 must be bullish displacement (Close > Open)
+      if(closeC2 <= openC2) return false;
+
+      // 2. The immediate 3-candle sequence (C1=obBarIndex, C2=c2BarIndex, C3=c3BarIndex) forms a valid FVG: Low(C3) > High(C1)
+      if(lowC3 <= highOB) return false;
+
+      // 3. The displacement candle C2 (or C3) produces structural break (BOS/CHoCH) of prior 4H swing high
+      bool producesBOS = false;
+      SMCSwing prevHigh;
+      if(FindMostRecentSwingHigh(symbol, SMC_4H_Timeframe, 50, prevHigh, obBarIndex + 1))
       {
-         double high1 = iHigh(symbol, SMC_4H_Timeframe, k + 2);
-         double low3  = iLow(symbol, SMC_4H_Timeframe, k);
-         if(low3 > high1) hasFVG = true;
-
-         SMCSwing prevHigh;
-         if(Get5BarSwingHigh(symbol, SMC_4H_Timeframe, k + 2, prevHigh))
+         double closeC3 = iClose(symbol, SMC_4H_Timeframe, c3BarIndex);
+         if(closeC2 > prevHigh.price || closeC3 > prevHigh.price)
          {
-            if(iClose(symbol, SMC_4H_Timeframe, k) > prevHigh.price) hasBOS = true;
+            producesBOS = true;
          }
       }
-
-      if(!hasFVG || !hasBOS) return false;
+      if(!producesBOS) return false;
 
       outPOI.type      = POI_TYPE_DEMAND;
       outPOI.bottom    = lowOB;
@@ -595,23 +603,31 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
    // Bearish OB: final up-close candle before qualifying bearish displacement (producing FVG & BOS/CHoCH)
    else if(closeOB > openOB)
    {
-      bool hasFVG = false;
-      bool hasBOS = false;
+      // C2 is the aggressive displacement candle directly following C1 (the OB bar obBarIndex)
+      int c2BarIndex = obBarIndex - 1;
+      int c3BarIndex = obBarIndex - 2;
+      double openC2  = iOpen(symbol, SMC_4H_Timeframe, c2BarIndex);
+      double closeC2 = iClose(symbol, SMC_4H_Timeframe, c2BarIndex);
+      double highC3  = iHigh(symbol, SMC_4H_Timeframe, c3BarIndex);
 
-      for(int k = obBarIndex - 1; k >= 1; k--)
+      // 1. C2 must be bearish displacement (Close < Open)
+      if(closeC2 >= openC2) return false;
+
+      // 2. The immediate 3-candle sequence (C1=obBarIndex, C2=c2BarIndex, C3=c3BarIndex) forms a valid FVG: High(C3) < Low(C1)
+      if(highC3 >= lowOB) return false;
+
+      // 3. The displacement candle C2 (or C3) produces structural break (BOS/CHoCH) of prior 4H swing low
+      bool producesBOS = false;
+      SMCSwing prevLow;
+      if(FindMostRecentSwingLow(symbol, SMC_4H_Timeframe, 50, prevLow, obBarIndex + 1))
       {
-         double low1  = iLow(symbol, SMC_4H_Timeframe, k + 2);
-         double high3 = iHigh(symbol, SMC_4H_Timeframe, k);
-         if(high3 < low1) hasFVG = true;
-
-         SMCSwing prevLow;
-         if(Get5BarSwingLow(symbol, SMC_4H_Timeframe, k + 2, prevLow))
+         double closeC3 = iClose(symbol, SMC_4H_Timeframe, c3BarIndex);
+         if(closeC2 < prevLow.price || closeC3 < prevLow.price)
          {
-            if(iClose(symbol, SMC_4H_Timeframe, k) < prevLow.price) hasBOS = true;
+            producesBOS = true;
          }
       }
-
-      if(!hasFVG || !hasBOS) return false;
+      if(!producesBOS) return false;
 
       outPOI.type      = POI_TYPE_SUPPLY;
       outPOI.bottom    = lowOB;
@@ -642,26 +658,55 @@ bool GetActive4HPOI(string symbol, SMCPOI &outPOI)
    ZeroMemory(outPOI);
    outPOI.isActive = false;
 
-   // 1. Check registered POIs first
+   // 1. Check 4H structural direction first
+   ENUM_SMC_STRUCTURE structure4H = GetTimeframeStructure(symbol, SMC_4H_Timeframe, 50);
+   if(structure4H == SMC_STRUCTURE_UNDEFINED) return false;
+
+   SMCPOI newestPOI;
+   ZeroMemory(newestPOI);
+   datetime newestTime = 0;
+
+   // 2. Check registered POIs (must satisfy same direction filter, validity, and invalidation rules)
    int total = ArraySize(g_Registered4HPOIs);
    for(int i = 0; i < total; i++)
    {
       if(g_Registered4HPOIs[i].isActive && g_Registered4HPOIs[i].timeframe == SMC_4H_Timeframe)
       {
-         outPOI = g_Registered4HPOIs[i];
-         return true;
+         bool matchesDir = (structure4H == SMC_STRUCTURE_BULLISH && g_Registered4HPOIs[i].type == POI_TYPE_DEMAND) ||
+                           (structure4H == SMC_STRUCTURE_BEARISH && g_Registered4HPOIs[i].type == POI_TYPE_SUPPLY);
+         if(matchesDir)
+         {
+            // Verify registered POI is not invalidated by subsequent 4H candle closes
+            bool isInvalidated = false;
+            int regBarIndex = iBarShift(symbol, SMC_4H_Timeframe, g_Registered4HPOIs[i].time, false);
+            if(regBarIndex > 1)
+            {
+               for(int k = regBarIndex - 1; k >= 1; k--)
+               {
+                  double cl = iClose(symbol, SMC_4H_Timeframe, k);
+                  if(g_Registered4HPOIs[i].type == POI_TYPE_DEMAND && cl > 0 && cl < g_Registered4HPOIs[i].bottom)
+                  {
+                     isInvalidated = true;
+                     break;
+                  }
+                  if(g_Registered4HPOIs[i].type == POI_TYPE_SUPPLY && cl > 0 && cl > g_Registered4HPOIs[i].top)
+                  {
+                     isInvalidated = true;
+                     break;
+                  }
+               }
+            }
+
+            if(!isInvalidated && g_Registered4HPOIs[i].time > newestTime)
+            {
+               newestPOI = g_Registered4HPOIs[i];
+               newestTime = g_Registered4HPOIs[i].time;
+            }
+         }
       }
    }
 
-   // 2. Check 4H structural direction
-   ENUM_SMC_STRUCTURE structure4H = GetTimeframeStructure(symbol, SMC_4H_Timeframe, 50);
-   if(structure4H == SMC_STRUCTURE_UNDEFINED) return false;
-
    // 3. Scan 4H bars for most recent valid, uninvalidated POI (OB and FVG have EQUAL status)
-   SMCPOI newestPOI;
-   ZeroMemory(newestPOI);
-   datetime newestTime = 0;
-
    for(int i = 1; i <= 50; i++)
    {
       // Check 4H FVG
@@ -689,13 +734,12 @@ bool GetActive4HPOI(string symbol, SMCPOI &outPOI)
             newestTime = obPOI.time;
          }
       }
+   }
 
-      // If a valid POI exists at bar i, return it immediately as it is the most recent
-      if(newestTime > 0)
-      {
-         outPOI = newestPOI;
-         return true;
-      }
+   if(newestTime > 0)
+   {
+      outPOI = newestPOI;
+      return true;
    }
 
    return false;
