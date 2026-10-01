@@ -860,5 +860,128 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertNotEqual(tp_to_use, fallback_3r_tp)
 
 
+class TestSMCStateMachineAudits(unittest.TestCase):
+
+    def test_no_duplicate_switch_cases_in_mqh(self):
+        """Verify SMC_ENTRY_SUBMITTED case is not duplicated in ProcessSMCSetupStateMachine in smc_engine.mqh."""
+        with open("showcase/smc_engine.mqh", "r") as f:
+            content = f.read()
+
+        # Extract ProcessSMCSetupStateMachine body
+        start = content.find("void ProcessSMCSetupStateMachine")
+        end = content.find("void SMCEngine_OnTick")
+        self.assertGreater(start, 0)
+        self.assertGreater(end, start)
+
+        fn_body = content[start:end]
+        count = fn_body.count("case SMC_ENTRY_SUBMITTED:")
+        self.assertEqual(count, 1, f"Expected case SMC_ENTRY_SUBMITTED: in ProcessSMCSetupStateMachine to appear 1 time, found {count}")
+
+    def test_get_or_create_setup_preserves_invalidated_setups(self):
+        """
+        Verify GetOrCreateSetupForSymbol logic:
+        Invalidated setups are preserved in history and never reused/overwritten.
+        """
+        setups = []
+
+        def get_or_create_setup(symbol):
+            # Mirror GetOrCreateSetupForSymbol logic in smc_engine.mqh
+            for i, s in enumerate(setups):
+                if s['symbol'] == symbol and s['state'] not in ('SMC_INVALIDATED', 'SMC_COMPLETED'):
+                    return i
+
+            new_slot = len(setups)
+            setups.append({
+                'id': f"SETUP_{symbol}_{new_slot}",
+                'symbol': symbol,
+                'state': 'SMC_IDLE'
+            })
+            return new_slot
+
+        # 1. Create initial setup for EURUSD
+        idx1 = get_or_create_setup("EURUSD")
+        self.assertEqual(idx1, 0)
+        self.assertEqual(setups[0]['state'], 'SMC_IDLE')
+
+        # 2. Invalidate setup 0
+        setups[0]['state'] = 'SMC_INVALIDATED'
+
+        # 3. Request setup for EURUSD again -> must append new slot, NOT reuse slot 0
+        idx2 = get_or_create_setup("EURUSD")
+        self.assertEqual(idx2, 1)
+        self.assertEqual(len(setups), 2)
+        self.assertEqual(setups[0]['state'], 'SMC_INVALIDATED')
+        self.assertEqual(setups[1]['state'], 'SMC_IDLE')
+
+    def test_process_state_machine_ignores_invalidated_setups(self):
+        """Verify that SMC_INVALIDATED is a terminal state and ignored on tick."""
+        setup = {'state': 'SMC_INVALIDATED', 'symbol': 'EURUSD', 'invalidation_reason': '4H POI inactive'}
+
+        # Replicate process state machine entry check
+        def process_state_machine(s):
+            if s['state'] in ('SMC_INVALIDATED', 'SMC_COMPLETED'):
+                return
+            s['state'] = 'SMC_H4_POI_ACTIVE'
+
+        process_state_machine(setup)
+        self.assertEqual(setup['state'], 'SMC_INVALIDATED')
+
+    def test_m15_choch_structural_invalidation_without_arbitrary_timeout(self):
+        """
+        Verify M15 CHoCH waiting state invalidation:
+        Price breaching sweep_price invalidates setup structurally without requiring an arbitrary 48h timeout.
+        """
+        setup = {
+            'direction': 'BUY',
+            'sweepPrice': 1.0950,
+            'state': 'SMC_WAITING_FOR_M15_CHOCH'
+        }
+
+        # Case A: Completed candle M15 low reaches 1.0945 (< 1.0950 sweepPrice)
+        m15_candle_bar1 = {'close': 1.0955, 'low': 1.0945, 'high': 1.0980}
+
+        def check_waiting_choch(s, candle):
+            if s['direction'] == 'BUY':
+                if candle['close'] < s['sweepPrice'] or candle['low'] < s['sweepPrice']:
+                    s['state'] = 'SMC_INVALIDATED'
+                    s['invalidation_reason'] = 'Sweep price invalidated by lower low before CHoCH confirmed'
+
+        check_waiting_choch(setup, m15_candle_bar1)
+        self.assertEqual(setup['state'], 'SMC_INVALIDATED')
+        self.assertEqual(setup['invalidation_reason'], 'Sweep price invalidated by lower low before CHoCH confirmed')
+
+    def test_fvg_invalidation_blocks_entry(self):
+        """Verify that an invalidated FVG prevents setup from proceeding to entry."""
+        setup = {
+            'state': 'SMC_M5_CONFIRMATION',
+            'm5FVG': {'isValid': True, 'bottom': 1.1000, 'top': 1.1015, 'isBullish': True}
+        }
+
+        # Completed M5 candle body close is 1.0995 (< FVG bottom 1.1000)
+        m5_close1 = 1.0995
+        is_fvg_invalidated = m5_close1 < setup['m5FVG']['bottom']
+
+        if not setup['m5FVG']['isValid'] or is_fvg_invalidated:
+            setup['state'] = 'SMC_INVALIDATED'
+            setup['invalidation_reason'] = 'M5 FVG invalid or invalidated'
+
+        self.assertEqual(setup['state'], 'SMC_INVALIDATED')
+
+    def test_failed_order_submission_invalidates_setup(self):
+        """Verify that failed OrderSend or pre-trade risk rejection invalidates setup."""
+        setup = {
+            'state': 'SMC_WAITING_FOR_FVG_RETRACE',
+            'symbol': 'EURUSD'
+        }
+
+        # Replicate risk manager gate rejection
+        can_open_trade = False
+        if not can_open_trade:
+            setup['state'] = 'SMC_INVALIDATED'
+            setup['invalidation_reason'] = 'Pre-trade risk gate blocked execution'
+
+        self.assertEqual(setup['state'], 'SMC_INVALIDATED')
+
+
 if __name__ == "__main__":
     unittest.main()

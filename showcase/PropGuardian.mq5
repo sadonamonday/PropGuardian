@@ -164,6 +164,12 @@ void OnTimer()
 
          if(g_SMCSetups[setupIdx].state == SMC_WAITING_FOR_FVG_RETRACE || g_SMCSetups[setupIdx].state == SMC_FVG_DETECTED)
          {
+            if(!g_SMCSetups[setupIdx].m5FVG.isValid || IsFVGInvalidated(symbol, g_SMCSetups[setupIdx].m5FVG))
+            {
+               InvalidateSetup(g_SMCSetups[setupIdx], "M5 FVG invalidated prior to order placement");
+               continue;
+            }
+
             SignalResult signal;
             signal.type         = g_SMCSetups[setupIdx].direction;
             signal.entryPrice   = g_SMCSetups[setupIdx].entryPrice;

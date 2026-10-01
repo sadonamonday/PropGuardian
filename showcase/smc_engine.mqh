@@ -1155,7 +1155,7 @@ int CountActiveSetups()
    int total = ArraySize(g_SMCSetups);
    for(int i = 0; i < total; i++)
    {
-      if(g_SMCSetups[i].state != SMC_INVALIDATED && g_SMCSetups[i].state != SMC_IDLE)
+      if(g_SMCSetups[i].state != SMC_INVALIDATED && g_SMCSetups[i].state != SMC_COMPLETED && g_SMCSetups[i].state != SMC_IDLE)
          count++;
    }
    return count;
@@ -1164,6 +1164,9 @@ int CountActiveSetups()
 // Manage lifecycle for a specific setup on a symbol
 void ProcessSMCSetupStateMachine(SMCSetup &setup)
 {
+   if(setup.state == SMC_INVALIDATED || setup.state == SMC_COMPLETED)
+      return;
+
    string symbol = setup.symbol;
    datetime now  = TimeCurrent();
    setup.lastUpdatedTime = now;
@@ -1207,6 +1210,12 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_WAITING_FOR_M15_SWEEP:
       {
+         if(!setup.poi4H.isActive)
+         {
+            InvalidateSetup(setup, "4H POI inactive");
+            break;
+         }
+
          SMCSwing sweptSwing;
          if(CheckM15LiquiditySweep(symbol, setup.poi4H, setup.direction, sweptSwing))
          {
@@ -1220,7 +1229,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_M15_SWEEP_DETECTED:
       {
-         // Search for CHoCH candidate swing
+         // Search for CHoCH candidate swing in history prior to sweep
          SMCSwing chochSwing;
          if(FindCHoCHLevel(symbol, setup.direction, setup.m15SweptSwing, chochSwing))
          {
@@ -1230,23 +1239,46 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          }
          else
          {
-            // If no preceding swing found within 24 hours, invalidate
-            if(now - setup.sweepTime > 86400)
-               InvalidateSetup(setup, "No preceding M15 swing found for CHoCH");
+            // If no preceding M15 swing found in history prior to sweep, invalidate setup immediately
+            InvalidateSetup(setup, "No preceding M15 swing found for CHoCH");
          }
          break;
       }
 
       case SMC_WAITING_FOR_M15_CHOCH:
       {
+         // Structural Invalidation Check: sweep level breached
+         double m15Close1 = iClose(symbol, SMC_M15_Timeframe, 1);
+         double m15Low1   = iLow(symbol, SMC_M15_Timeframe, 1);
+         double m15High1  = iHigh(symbol, SMC_M15_Timeframe, 1);
+
+         if(setup.direction == SIGNAL_BUY)
+         {
+            if(m15Close1 < setup.sweepPrice || m15Low1 < setup.sweepPrice)
+            {
+               InvalidateSetup(setup, "Sweep price invalidated by lower low before CHoCH confirmed");
+               break;
+            }
+         }
+         else if(setup.direction == SIGNAL_SELL)
+         {
+            if(m15Close1 > setup.sweepPrice || m15High1 > setup.sweepPrice)
+            {
+               InvalidateSetup(setup, "Sweep price invalidated by higher high before CHoCH confirmed");
+               break;
+            }
+         }
+
+         if(!setup.poi4H.isActive)
+         {
+            InvalidateSetup(setup, "4H POI inactive before CHoCH confirmed");
+            break;
+         }
+
          if(CheckM15CHoCH(symbol, setup.direction, setup.m15ChochSwing))
          {
             setup.chochTime = iTime(symbol, SMC_M15_Timeframe, 1);
             setup.state     = SMC_M15_CHOCH_CONFIRMED;
-         }
-         else if(now - setup.sweepTime > (86400 * 2))
-         {
-            InvalidateSetup(setup, "CHoCH timeout expired");
          }
          break;
       }
@@ -1271,19 +1303,25 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_M5_CONFIRMATION:
       {
-         if(setup.m5FVG.isValid)
+         if(setup.m5FVG.isValid && !IsFVGInvalidated(symbol, setup.m5FVG))
          {
             setup.state = SMC_FVG_DETECTED;
          }
          else
          {
-            InvalidateSetup(setup, "M5 FVG invalid");
+            InvalidateSetup(setup, "M5 FVG invalid or invalidated");
          }
          break;
       }
 
       case SMC_FVG_DETECTED:
       {
+         if(!setup.m5FVG.isValid || IsFVGInvalidated(symbol, setup.m5FVG))
+         {
+            InvalidateSetup(setup, "M5 FVG invalid or invalidated before entry calculation");
+            break;
+         }
+
          setup.entryPrice = setup.m5FVG.midpoint;
 
          // Calculate Structural SL (pure invalidation level of setup)
@@ -1337,14 +1375,14 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          // Supporting OB
          FindM5OrderBlock(symbol, setup.direction, setup.m5OB);
 
-         // Verify no-chase condition before proceeding to waiting for retrace
-         double currentPrice = iClose(symbol, SMC_M5_Timeframe, 0);
-         if(setup.direction == SIGNAL_BUY && currentPrice <= setup.entryPrice)
+         // Verify no-chase condition using confirmed completed candle (bar 1)
+         double completedPrice = iClose(symbol, SMC_M5_Timeframe, 1);
+         if(setup.direction == SIGNAL_BUY && completedPrice <= setup.entryPrice)
          {
             InvalidateSetup(setup, "NO CHASE: Price already passed through 50% FVG midpoint before order creation");
             break;
          }
-         if(setup.direction == SIGNAL_SELL && currentPrice >= setup.entryPrice)
+         if(setup.direction == SIGNAL_SELL && completedPrice >= setup.entryPrice)
          {
             InvalidateSetup(setup, "NO CHASE: Price already passed through 50% FVG midpoint before order creation");
             break;
@@ -1357,7 +1395,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
       case SMC_WAITING_FOR_FVG_RETRACE:
       case SMC_ENTRY_SUBMITTED:
       {
-         // Check FVG invalidation while waiting for order execution
+         // Check FVG invalidation while waiting for order execution or retrace
          if(IsFVGInvalidated(symbol, setup.m5FVG))
          {
             InvalidateSetup(setup, "M5 FVG invalidated by candle body close");
@@ -1366,7 +1404,6 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          break;
       }
 
-      case SMC_ENTRY_SUBMITTED:
       case SMC_TRADE_ACTIVE:
       case SMC_COMPLETED:
       {
@@ -1404,30 +1441,22 @@ void SMCEngine_OnTick()
    }
 }
 
-// Find existing non-invalidated setup or re-use/create setup slot for symbol
+// Find existing non-invalidated setup or create setup slot for symbol
 int GetOrCreateSetupForSymbol(string symbol)
 {
    int total = ArraySize(g_SMCSetups);
-   int freeSlot = -1;
 
    for(int i = 0; i < total; i++)
    {
-      if(g_SMCSetups[i].symbol == symbol && g_SMCSetups[i].state != SMC_INVALIDATED)
+      if(g_SMCSetups[i].symbol == symbol && g_SMCSetups[i].state != SMC_INVALIDATED && g_SMCSetups[i].state != SMC_COMPLETED)
       {
          return i;
       }
-      if(freeSlot == -1 && g_SMCSetups[i].state == SMC_INVALIDATED)
-      {
-         freeSlot = i;
-      }
    }
 
-   // Reuse invalidated slot if available
-   int targetSlot = (freeSlot != -1) ? freeSlot : total;
-   if(targetSlot == total)
-   {
-      ArrayResize(g_SMCSetups, total + 1);
-   }
+   // Always append new setup slot to preserve historical/invalidated setup records
+   int targetSlot = total;
+   ArrayResize(g_SMCSetups, total + 1);
 
    ZeroMemory(g_SMCSetups[targetSlot]);
    g_SMCSetups[targetSlot].setupID       = GenerateSetupID(symbol);
