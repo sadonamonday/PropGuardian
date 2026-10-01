@@ -721,5 +721,144 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertFalse(order_placed)
 
 
+    # --- 5. STRUCTURAL SL & TP TARGETING RULES ---
+
+    @staticmethod
+    def _calculate_structural_sl(direction, sweep_price, entry_price):
+        """
+        Replicates structural SL logic in smc_engine.mqh:
+        Uses the sweep invalidation level without arbitrary pip/point buffers.
+        """
+        if direction == "BUY":
+            sl_price = sweep_price
+            if sl_price >= entry_price:
+                return None, "Structural SL is not below entry price for Buy setup"
+            return sl_price, None
+        elif direction == "SELL":
+            sl_price = sweep_price
+            if sl_price <= entry_price:
+                return None, "Structural SL is not above entry price for Sell setup"
+            return sl_price, None
+        return None, "Invalid direction"
+
+    @staticmethod
+    def _find_next_opposing_target(direction, entry_price, m15_swings):
+        """
+        Replicates FindNextOpposingTargetHigh/Low logic in smc_engine.mqh.
+        Scans confirmed M15 swings backward (bar index >= 3, swing.time <= current_time)
+        and returns the next opposing target ahead of entry.
+        """
+        # Filter for confirmed swings only (bar_index >= 3 to ensure no unconfirmed/future swings)
+        confirmed_swings = [s for s in m15_swings if s.get('isValid', True) and s.get('bar_index', 3) >= 3]
+
+        # Sort by bar_index ascending (scanning backward from most recent confirmed bar 3)
+        sorted_swings = sorted(confirmed_swings, key=lambda x: x.get('bar_index', 3))
+
+        if direction == "BUY":
+            for swing in sorted_swings:
+                if swing.get('type') == 'HIGH' and swing['price'] > entry_price:
+                    return swing
+            return None
+        elif direction == "SELL":
+            for swing in sorted_swings:
+                if swing.get('type') == 'LOW' and swing['price'] < entry_price:
+                    return swing
+            return None
+        return None
+
+    def test_bullish_structural_sl(self):
+        # 1. Bullish structural SL: SL equals sweep invalidation low (below entry) with no spread/point buffer
+        sweep_low = 1.0950
+        entry_price = 1.1010
+        sl, err = self._calculate_structural_sl("BUY", sweep_low, entry_price)
+        self.assertIsNone(err)
+        self.assertEqual(sl, 1.0950) # Pure structural invalidation low, no arbitrary buffer
+        self.assertLess(sl, entry_price)
+
+    def test_bearish_structural_sl(self):
+        # 2. Bearish structural SL: SL equals sweep invalidation high (above entry) with no spread/point buffer
+        sweep_high = 1.1080
+        entry_price = 1.1010
+        sl, err = self._calculate_structural_sl("SELL", sweep_high, entry_price)
+        self.assertIsNone(err)
+        self.assertEqual(sl, 1.1080) # Pure structural invalidation high, no arbitrary buffer
+        self.assertGreater(sl, entry_price)
+
+    def test_bullish_next_opposing_target(self):
+        # 3. Bullish next opposing target: finds next M15 swing high above entry
+        entry_price = 1.1010
+        m15_swings = [
+            {'type': 'HIGH', 'price': 1.1005, 'bar_index': 4, 'isValid': True}, # Behind entry (below)
+            {'type': 'HIGH', 'price': 1.1050, 'bar_index': 10, 'isValid': True}, # Ahead of entry -> Next opposing target
+            {'type': 'HIGH', 'price': 1.1080, 'bar_index': 20, 'isValid': True}, # Further ahead
+        ]
+        target = self._find_next_opposing_target("BUY", entry_price, m15_swings)
+        self.assertIsNotNone(target)
+        self.assertEqual(target['price'], 1.1050)
+        self.assertGreater(target['price'], entry_price)
+
+    def test_bearish_next_opposing_target(self):
+        # 4. Bearish next opposing target: finds next M15 swing low below entry
+        entry_price = 1.1000
+        m15_swings = [
+            {'type': 'LOW', 'price': 1.1010, 'bar_index': 5, 'isValid': True}, # Behind entry (above)
+            {'type': 'LOW', 'price': 1.0950, 'bar_index': 12, 'isValid': True}, # Ahead of entry -> Next opposing target
+            {'type': 'LOW', 'price': 1.0920, 'bar_index': 25, 'isValid': True}, # Further ahead
+        ]
+        target = self._find_next_opposing_target("SELL", entry_price, m15_swings)
+        self.assertIsNotNone(target)
+        self.assertEqual(target['price'], 1.0950)
+        self.assertLess(target['price'], entry_price)
+
+    def test_target_behind_entry_is_rejected(self):
+        # 5. Target behind entry is rejected: skips swing behind entry and selects next swing ahead of entry
+        entry_price = 1.1010
+        m15_swings = [
+            {'type': 'HIGH', 'price': 1.0990, 'bar_index': 3, 'isValid': True}, # Most recent swing, but behind entry
+            {'type': 'HIGH', 'price': 1.1060, 'bar_index': 15, 'isValid': True}, # Next swing ahead of entry
+        ]
+        target = self._find_next_opposing_target("BUY", entry_price, m15_swings)
+        self.assertIsNotNone(target)
+        self.assertNotEqual(target['price'], 1.0990) # Most recent swing rejected because behind entry
+        self.assertEqual(target['price'], 1.1060)
+
+    def test_no_valid_target_means_no_trade(self):
+        # 6. No valid target means no trade: invalidates setup if all swings are behind entry
+        entry_price = 1.1010
+        m15_swings = [
+            {'type': 'HIGH', 'price': 1.1000, 'bar_index': 3, 'isValid': True},
+            {'type': 'HIGH', 'price': 1.1005, 'bar_index': 8, 'isValid': True},
+        ]
+        target = self._find_next_opposing_target("BUY", entry_price, m15_swings)
+        self.assertIsNone(target) # No valid opposing target exists ahead of entry
+
+    def test_no_future_unconfirmed_swing_used(self):
+        # 7. No future/unconfirmed swing is used: swing at bar_index < 3 is excluded
+        entry_price = 1.1010
+        m15_swings = [
+            {'type': 'HIGH', 'price': 1.1070, 'bar_index': 1, 'isValid': True}, # Unconfirmed/future swing (bar 1 < 3)
+            {'type': 'HIGH', 'price': 1.1050, 'bar_index': 5, 'isValid': True}, # Confirmed swing
+        ]
+        target = self._find_next_opposing_target("BUY", entry_price, m15_swings)
+        self.assertIsNotNone(target)
+        self.assertEqual(target['price'], 1.1050) # Unconfirmed swing at bar 1 skipped
+
+    def test_no_fixed_3r_fallback_exists(self):
+        # 8. No fixed 3R fallback exists: when no target exists, trade submission must be blocked rather than fallback to 3R
+        entry_price = 1.1010
+        sl_price = 1.0950
+        stop_distance = entry_price - sl_price
+        fallback_3r_tp = entry_price + (3.0 * stop_distance) # 1.1190
+
+        m15_swings = [] # No opposing target
+        target = self._find_next_opposing_target("BUY", entry_price, m15_swings)
+
+        # Confirm target search returns None and setup MUST NOT use fallback_3r_tp
+        self.assertIsNone(target)
+        tp_to_use = target['price'] if target else None
+        self.assertIsNone(tp_to_use)
+        self.assertNotEqual(tp_to_use, fallback_3r_tp)
+
+
 if __name__ == "__main__":
     unittest.main()

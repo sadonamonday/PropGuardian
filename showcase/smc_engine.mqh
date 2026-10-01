@@ -280,6 +280,57 @@ bool Get5BarSwingHigh(string symbol, ENUM_TIMEFRAMES tf, int barIndex, SMCSwing 
    return false;
 }
 
+// Search for the next valid opposing structural target ahead of entry price scanning backward
+bool FindNextOpposingTargetHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, double entryPrice, SMCSwing &outSwing)
+{
+   ZeroMemory(outSwing);
+   outSwing.isValid = false;
+
+   int startBar = (tf == PERIOD_M5) ? 2 : 3;
+
+   for(int i = startBar; i <= maxLookbackBars; i++)
+   {
+      SMCSwing swing;
+      bool found = (tf == PERIOD_M5)
+                   ? Get3BarSwingHigh(symbol, tf, i, swing)
+                   : Get5BarSwingHigh(symbol, tf, i, swing);
+      if(found)
+      {
+         if(swing.price > entryPrice)
+         {
+            outSwing = swing;
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
+bool FindNextOpposingTargetLow(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, double entryPrice, SMCSwing &outSwing)
+{
+   ZeroMemory(outSwing);
+   outSwing.isValid = false;
+
+   int startBar = (tf == PERIOD_M5) ? 2 : 3;
+
+   for(int i = startBar; i <= maxLookbackBars; i++)
+   {
+      SMCSwing swing;
+      bool found = (tf == PERIOD_M5)
+                   ? Get3BarSwingLow(symbol, tf, i, swing)
+                   : Get5BarSwingLow(symbol, tf, i, swing);
+      if(found)
+      {
+         if(swing.price < entryPrice)
+         {
+            outSwing = swing;
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
 bool Get5BarSwingLow(string symbol, ENUM_TIMEFRAMES tf, int barIndex, SMCSwing &outSwing)
 {
    ZeroMemory(outSwing);
@@ -1235,15 +1286,24 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
       {
          setup.entryPrice = setup.m5FVG.midpoint;
 
-         // Calculate Structural SL
-         double spread = SymbolInfoDouble(symbol, SYMBOL_ASK) - SymbolInfoDouble(symbol, SYMBOL_BID);
+         // Calculate Structural SL (pure invalidation level of setup)
          if(setup.direction == SIGNAL_BUY)
          {
-            setup.slPrice = setup.sweepPrice - spread - (2.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
+            setup.slPrice = setup.sweepPrice;
+            if(setup.slPrice >= setup.entryPrice)
+            {
+               InvalidateSetup(setup, "Structural SL is not below entry price for Buy setup");
+               break;
+            }
          }
          else
          {
-            setup.slPrice = setup.sweepPrice + spread + (2.0 * SymbolInfoDouble(symbol, SYMBOL_POINT));
+            setup.slPrice = setup.sweepPrice;
+            if(setup.slPrice <= setup.entryPrice)
+            {
+               InvalidateSetup(setup, "Structural SL is not above entry price for Sell setup");
+               break;
+            }
          }
          setup.stopDistance = MathAbs(setup.entryPrice - setup.slPrice);
 
@@ -1251,37 +1311,25 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          SMCSwing oppSwing;
          if(setup.direction == SIGNAL_BUY)
          {
-            if(FindMostRecentSwingHigh(symbol, SMC_M15_Timeframe, 50, oppSwing))
+            if(FindNextOpposingTargetHigh(symbol, SMC_M15_Timeframe, 200, setup.entryPrice, oppSwing))
             {
-               if(oppSwing.price > setup.entryPrice)
-                  setup.tpPrice = oppSwing.price;
-               else
-               {
-                  InvalidateSetup(setup, "Opposing M15 structural high target is not ahead of entry price");
-                  break;
-               }
+               setup.tpPrice = oppSwing.price;
             }
             else
             {
-               InvalidateSetup(setup, "No valid opposing M15 structural high target found for TP");
+               InvalidateSetup(setup, "No valid opposing M15 structural high target found ahead of entry price for TP");
                break;
             }
          }
          else
          {
-            if(FindMostRecentSwingLow(symbol, SMC_M15_Timeframe, 50, oppSwing))
+            if(FindNextOpposingTargetLow(symbol, SMC_M15_Timeframe, 200, setup.entryPrice, oppSwing))
             {
-               if(oppSwing.price < setup.entryPrice)
-                  setup.tpPrice = oppSwing.price;
-               else
-               {
-                  InvalidateSetup(setup, "Opposing M15 structural low target is not ahead of entry price");
-                  break;
-               }
+               setup.tpPrice = oppSwing.price;
             }
             else
             {
-               InvalidateSetup(setup, "No valid opposing M15 structural low target found for TP");
+               InvalidateSetup(setup, "No valid opposing M15 structural low target found ahead of entry price for TP");
                break;
             }
          }
