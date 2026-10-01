@@ -19,96 +19,251 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertTrue(is_low)
 
     @staticmethod
-    def _find_4h_order_block(c1, c2, c3, prev_swing_price):
+    def _find_4h_order_block(bars, ob_idx, prev_swing_price):
         """
-        Helper replicating Find4HOrderBlock logic in smc_engine.mqh.
-        c1 = OB candle
-        c2 = displacement candle immediately following C1 (C2 close > open for bullish, close < open for bearish)
-        c3 = third candle completing FVG sequence
-        prev_swing_price = prior 4H swing price to be broken (BOS)
+        Helper replicating updated Find4HOrderBlock logic in smc_engine.mqh.
+        bars: dict mapping barIndex (1, 2, ..., N) -> candle dict
+        ob_idx: candidate Order Block bar index
+        prev_swing_price: prior 4H swing high (for bullish) or swing low (for bearish) price
         """
-        open_c1, close_c1 = c1['open'], c1['close']
-        high_c1, low_c1 = c1['high'], c1['low']
+        if ob_idx not in bars or ob_idx < 3:
+            return False, None
 
-        # Bullish OB: final down-close candle
-        if close_c1 < open_c1:
-            open_c2, close_c2 = c2['open'], c2['close']
-            if close_c2 <= open_c2:  # C2 must be bullish displacement
+        ob = bars[ob_idx]
+        open_ob, close_ob = ob['open'], ob['close']
+        high_ob, low_ob = ob['high'], ob['low']
+
+        if open_ob == 0 or close_ob == 0:
+            return False, None
+
+        # Bullish OB: final down-close candle before qualifying bullish move
+        if close_ob < open_ob:
+            next_bar = ob_idx - 1
+            if next_bar not in bars or next_bar < 1:
+                return False, None
+            if bars[next_bar]['close'] < bars[next_bar]['open']:
                 return False, None
 
-            # FVG check: Low(C3) > High(C1)
-            if c3['low'] <= high_c1:
+            has_bos = False
+            has_fvg = False
+
+            for k in range(ob_idx - 1, 0, -1):
+                if k not in bars:
+                    break
+                op_k = bars[k]['open']
+                cl_k = bars[k]['close']
+
+                if cl_k > prev_swing_price:
+                    has_bos = True
+
+                c1 = k + 2
+                c3 = k
+                if c1 <= ob_idx and c1 in bars and c3 in bars:
+                    high_c1 = bars[c1]['high']
+                    low_c3 = bars[c3]['low']
+                    if high_c1 > 0 and low_c3 > high_c1:
+                        has_fvg = True
+
+                if has_bos and has_fvg:
+                    break
+
+                if cl_k < op_k and k < ob_idx - 1:
+                    return False, None
+
+            if not has_bos or not has_fvg:
                 return False, None
 
-            # BOS check: body close above prev_swing_price
-            if close_c2 <= prev_swing_price and c3['close'] <= prev_swing_price:
-                return False, None
+            # Invalidation check: completed candle closes below bottom
+            for k in range(ob_idx - 1, 0, -1):
+                if k in bars and bars[k]['close'] < low_ob:
+                    return False, None
 
             return True, {
                 'type': 'DEMAND',
-                'bottom': low_c1,
-                'top': high_c1,
-                'time': c1.get('time', 100),
+                'bottom': low_ob,
+                'top': high_ob,
+                'time': ob.get('time', 100),
                 'isActive': True
             }
 
-        # Bearish OB: final up-close candle
-        elif close_c1 > open_c1:
-            open_c2, close_c2 = c2['open'], c2['close']
-            if close_c2 >= open_c2:  # C2 must be bearish displacement
+        # Bearish OB: final up-close candle before qualifying bearish move
+        elif close_ob > open_ob:
+            next_bar = ob_idx - 1
+            if next_bar not in bars or next_bar < 1:
+                return False, None
+            if bars[next_bar]['close'] > bars[next_bar]['open']:
                 return False, None
 
-            # FVG check: High(C3) < Low(C1)
-            if c3['high'] >= low_c1:
+            has_bos = False
+            has_fvg = False
+
+            for k in range(ob_idx - 1, 0, -1):
+                if k not in bars:
+                    break
+                op_k = bars[k]['open']
+                cl_k = bars[k]['close']
+
+                if cl_k < prev_swing_price:
+                    has_bos = True
+
+                c1 = k + 2
+                c3 = k
+                if c1 <= ob_idx and c1 in bars and c3 in bars:
+                    low_c1 = bars[c1]['low']
+                    high_c3 = bars[c3]['high']
+                    if low_c1 > 0 and high_c3 < low_c1:
+                        has_fvg = True
+
+                if has_bos and has_fvg:
+                    break
+
+                if cl_k > op_k and k < ob_idx - 1:
+                    return False, None
+
+            if not has_bos or not has_fvg:
                 return False, None
 
-            # BOS check: body close below prev_swing_price
-            if close_c2 >= prev_swing_price and c3['close'] >= prev_swing_price:
-                return False, None
+            # Invalidation check: completed candle closes above top
+            for k in range(ob_idx - 1, 0, -1):
+                if k in bars and bars[k]['close'] > high_ob:
+                    return False, None
 
             return True, {
                 'type': 'SUPPLY',
-                'bottom': low_c1,
-                'top': high_c1,
-                'time': c1.get('time', 100),
+                'bottom': low_ob,
+                'top': high_ob,
+                'time': ob.get('time', 100),
                 'isActive': True
             }
 
         return False, None
 
     def test_4h_bullish_ob_definition(self):
-        # 3. Bullish 4H OB: final bearish down-close candle before displacement + FVG + BOS
-        c1 = {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100} # Down-close
-        c2 = {'open': 1.1005, 'close': 1.1050, 'high': 1.1055, 'low': 1.1000}             # Bullish displacement
-        c3 = {'open': 1.1045, 'close': 1.1060, 'high': 1.1065, 'low': 1.1030}              # Low(C3) 1.1030 > High(C1) 1.1025
-        prev_swing_high = 1.1040                                                          # C2 close 1.1050 > 1.1040 (BOS)
+        # 1. Valid Bullish 4H OB test
+        bars = {
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Down-close OB (bar 4)
+            3: {'open': 1.1005, 'close': 1.1035, 'high': 1.1040, 'low': 1.1000},             # Bullish move
+            2: {'open': 1.1030, 'close': 1.1050, 'high': 1.1055, 'low': 1.1028},             # Bullish move & BOS, low(2)=1.1028 > high(4)=1.1025 (FVG)
+            1: {'open': 1.1048, 'close': 1.1060, 'high': 1.1065, 'low': 1.1042}              # Low(1)=1.1042 > high(3)=1.1040 (FVG)
+        }
+        prev_swing_high = 1.1040
 
-        valid, ob = self._find_4h_order_block(c1, c2, c3, prev_swing_high)
+        valid, ob = self._find_4h_order_block(bars, 4, prev_swing_high)
         self.assertTrue(valid)
         self.assertEqual(ob['type'], 'DEMAND')
         self.assertEqual((ob['bottom'], ob['top']), (1.0995, 1.1025))
 
-        # Reject if C2 is NOT bullish displacement
-        c2_bearish = {'open': 1.1030, 'close': 1.1010, 'high': 1.1035, 'low': 1.1005}
-        valid_bad_c2, _ = self._find_4h_order_block(c1, c2_bearish, c3, prev_swing_high)
-        self.assertFalse(valid_bad_c2)
-
     def test_4h_bearish_ob_definition(self):
-        # 4. Bearish 4H OB: final bullish up-close candle before displacement + FVG + BOS
-        c1 = {'open': 1.1000, 'close': 1.1020, 'high': 1.1025, 'low': 1.0995, 'time': 100} # Up-close
-        c2 = {'open': 1.1015, 'close': 1.0970, 'high': 1.1018, 'low': 1.0965}             # Bearish displacement
-        c3 = {'open': 1.0975, 'close': 1.0960, 'high': 1.0990, 'low': 1.0955}              # High(C3) 1.0990 < Low(C1) 1.0995
-        prev_swing_low = 1.0980                                                           # C2 close 1.0970 < 1.0980 (BOS)
+        # 2. Valid Bearish 4H OB test
+        bars = {
+            4: {'open': 1.1000, 'close': 1.1020, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Up-close OB (bar 4)
+            3: {'open': 1.1015, 'close': 1.0990, 'high': 1.1018, 'low': 1.0985},             # Bearish move
+            2: {'open': 1.0985, 'close': 1.0960, 'high': 1.0990, 'low': 1.0955},             # Bearish move & BOS
+            1: {'open': 1.0965, 'close': 1.0950, 'high': 1.0980, 'low': 1.0945}              # High(bar 1) 1.0980 < Low(bar 3) 1.0985
+        }
+        prev_swing_low = 1.0970
 
-        valid, ob = self._find_4h_order_block(c1, c2, c3, prev_swing_low)
+        valid, ob = self._find_4h_order_block(bars, 4, prev_swing_low)
         self.assertTrue(valid)
         self.assertEqual(ob['type'], 'SUPPLY')
         self.assertEqual((ob['bottom'], ob['top']), (1.0995, 1.1025))
 
-        # Reject if C2 is NOT bearish displacement
-        c2_bullish = {'open': 1.0970, 'close': 1.0990, 'high': 1.0995, 'low': 1.0965}
-        valid_bad_c2, _ = self._find_4h_order_block(c1, c2_bullish, c3, prev_swing_low)
-        self.assertFalse(valid_bad_c2)
+    def test_4h_ob_followed_by_qualifying_move_and_delayed_fvg(self):
+        # 3 & 5. OB followed by qualifying structural move where FVG occurs more than 1 candle after OB
+        # Candle 5 = candidate down-close OB
+        # Candle 4 = bullish move candle 1 (no FVG with C5 yet)
+        # Candle 3 = bullish move candle 2 (BOS)
+        # Candle 2 = bullish move candle 3
+        # Candle 1 = FVG completed with C3 (Low(1) 1.1040 > High(3) 1.1035)
+        bars = {
+            5: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB
+            4: {'open': 1.1005, 'close': 1.1020, 'high': 1.1022, 'low': 1.1002},             # Bullish
+            3: {'open': 1.1020, 'close': 1.1035, 'high': 1.1035, 'low': 1.1015},             # Bullish
+            2: {'open': 1.1035, 'close': 1.1050, 'high': 1.1055, 'low': 1.1030},             # Bullish (BOS)
+            1: {'open': 1.1048, 'close': 1.1060, 'high': 1.1065, 'low': 1.1040}              # Low(1) 1.1040 > High(3) 1.1035 -> FVG!
+        }
+        prev_swing_high = 1.1045
+
+        valid, ob = self._find_4h_order_block(bars, 5, prev_swing_high)
+        self.assertTrue(valid, "OB with delayed FVG must be valid and NOT automatically invalidated")
+        self.assertEqual(ob['type'], 'DEMAND')
+
+    def test_4h_multiple_opposite_candles_selects_final_qualifying(self):
+        # 4. Multiple opposite-colored candles — verify the final qualifying opposite candle is selected
+        # Candle 6 = down-close candle
+        # Candle 5 = down-close candle (final down-close before move)
+        # Candle 4 = bullish
+        # Candle 3 = bullish (BOS)
+        # Candle 2 = bullish
+        # Candle 1 = bullish (completes FVG with C3)
+        bars = {
+            6: {'open': 1.1040, 'close': 1.1020, 'high': 1.1045, 'low': 1.1015, 'time': 80},  # Older down-close
+            5: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Final down-close OB
+            4: {'open': 1.1005, 'close': 1.1025, 'high': 1.1030, 'low': 1.1000},             # Bullish
+            3: {'open': 1.1025, 'close': 1.1050, 'high': 1.1055, 'low': 1.1020},             # Bullish (BOS)
+            2: {'open': 1.1050, 'close': 1.1060, 'high': 1.1065, 'low': 1.1045},             # Bullish
+            1: {'open': 1.1060, 'close': 1.1070, 'high': 1.1075, 'low': 1.1060}              # FVG with C3
+        }
+        prev_swing_high = 1.1040
+
+        # Bar 6 candidate: immediately followed by bar 5 which is down-close -> REJECTED (not final down-close)
+        valid_bar6, _ = self._find_4h_order_block(bars, 6, prev_swing_high)
+        self.assertFalse(valid_bar6, "Bar 6 must be rejected because Bar 5 is a subsequent down-close candle")
+
+        # Bar 5 candidate: final down-close before move -> ACCEPTED
+        valid_bar5, ob_bar5 = self._find_4h_order_block(bars, 5, prev_swing_high)
+        self.assertTrue(valid_bar5)
+        self.assertEqual(ob_bar5['time'], 100)
+
+    def test_4h_unrelated_later_fvg_bos_does_not_validate_old_ob(self):
+        # 6. Unrelated later FVG/BOS must not incorrectly validate an old unrelated OB
+        # Candle 7 = down-close candle
+        # Candle 6 = bullish move
+        # Candle 5 = down-close candle (starts a new unrelated move)
+        # Candle 4 = bullish
+        # Candle 3 = bullish (BOS)
+        # Candle 2 = bullish
+        # Candle 1 = bullish (FVG with C3)
+        bars = {
+            7: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 60},  # Old OB candidate
+            6: {'open': 1.1005, 'close': 1.1015, 'high': 1.1018, 'low': 1.1000},             # Bullish
+            5: {'open': 1.1015, 'close': 1.0990, 'high': 1.1018, 'low': 1.0985},             # Down-close candle! Intervenes!
+            4: {'open': 1.0995, 'close': 1.1025, 'high': 1.1030, 'low': 1.0990},             # Bullish
+            3: {'open': 1.1025, 'close': 1.1050, 'high': 1.1055, 'low': 1.1020},             # Bullish (BOS)
+            2: {'open': 1.1050, 'close': 1.1060, 'high': 1.1065, 'low': 1.1045},             # Bullish
+            1: {'open': 1.1060, 'close': 1.1070, 'high': 1.1075, 'low': 1.1060}              # FVG
+        }
+        prev_swing_high = 1.1040
+
+        # Bar 7 is separated from the qualifying move by Bar 5 (down-close).
+        valid_bar7, _ = self._find_4h_order_block(bars, 7, prev_swing_high)
+        self.assertFalse(valid_bar7, "Old OB separated by an intervening down-close candle must be rejected")
+
+    def test_4h_invalidated_bullish_ob_rejected(self):
+        # 7. Invalidated bullish OB is rejected (completed candle close < lowOB)
+        bars = {
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB
+            3: {'open': 1.1005, 'close': 1.1050, 'high': 1.1055, 'low': 1.1000},             # Move & BOS & FVG
+            2: {'open': 1.1045, 'close': 1.1060, 'high': 1.1065, 'low': 1.1030},
+            1: {'open': 1.1030, 'close': 1.0990, 'high': 1.1035, 'low': 1.0985}              # Close 1.0990 < lowOB 1.0995 (Invalidated!)
+        }
+        prev_swing_high = 1.1040
+
+        valid, _ = self._find_4h_order_block(bars, 4, prev_swing_high)
+        self.assertFalse(valid, "Bullish OB closed below lowOB must be rejected as invalidated")
+
+    def test_4h_invalidated_bearish_ob_rejected(self):
+        # 8. Invalidated bearish OB is rejected (completed candle close > highOB)
+        bars = {
+            4: {'open': 1.1000, 'close': 1.1020, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB
+            3: {'open': 1.1015, 'close': 1.0970, 'high': 1.1018, 'low': 1.0965},             # Move & BOS & FVG
+            2: {'open': 1.0965, 'close': 1.0950, 'high': 1.0980, 'low': 1.0945},
+            1: {'open': 1.0955, 'close': 1.1030, 'high': 1.1035, 'low': 1.0950}              # Close 1.1030 > highOB 1.1025 (Invalidated!)
+        }
+        prev_swing_low = 1.0980
+
+        valid, _ = self._find_4h_order_block(bars, 4, prev_swing_low)
+        self.assertFalse(valid, "Bearish OB closed above highOB must be rejected as invalidated")
 
     def test_4h_bullish_fvg(self):
         # Bullish FVG: Low(C3) > High(C1)
@@ -275,24 +430,27 @@ class TestSMCEngineRules(unittest.TestCase):
     # --- 2. M15 SWEEP & CHOCH RULES ---
 
     @staticmethod
-    def _find_choch_level(direction, swept_swing, m15_swings):
+    def _find_choch_level(direction, sweep_time, m15_swings):
         """
         Helper mirroring FindCHoCHLevel in smc_engine.mqh.
-        Searches backward for confirmed swing (LH for BUY, HL for SELL)
-        with swing.time < swept_swing.time directly preceding final leg into swept extreme.
+        Searches backward from sweep_time across confirmed 5-bar swings
+        for the swing (LH for BUY, HL for SELL) directly originating the final leg.
         """
-        if not swept_swing.get('isValid', True) or swept_swing.get('time', 0) <= 0:
+        if sweep_time <= 0:
             return None
 
-        swept_time = swept_swing['time']
-        candidates = [s for s in m15_swings if s['time'] < swept_time and s.get('isValid', True)]
+        # Filter for confirmed 5-bar swings (bar_index >= 3 to ensure no unconfirmed/future swings)
+        candidates = [s for s in m15_swings
+                      if s.get('time', 0) < sweep_time
+                      and s.get('isValid', True)
+                      and s.get('bar_index', 3) >= 3]
 
         if direction == "BUY":
             # Search backward from swept low for confirmed LH (SWING_TYPE_HIGH)
             lh_candidates = [s for s in candidates if s['type'] == 'HIGH']
             if not lh_candidates:
                 return None
-            # Most recent LH prior to swept low
+            # Most recent confirmed LH prior to sweep_time
             return max(lh_candidates, key=lambda x: x['time'])
 
         elif direction == "SELL":
@@ -300,7 +458,7 @@ class TestSMCEngineRules(unittest.TestCase):
             hl_candidates = [s for s in candidates if s['type'] == 'LOW']
             if not hl_candidates:
                 return None
-            # Most recent HL prior to swept high
+            # Most recent confirmed HL prior to sweep_time
             return max(hl_candidates, key=lambda x: x['time'])
 
         return None
@@ -321,51 +479,47 @@ class TestSMCEngineRules(unittest.TestCase):
             return close1 < choch_swing['price']
         return False
 
-    def test_choch_1_bullish_swing_selection(self):
-        # 1. Correct bullish CHoCH swing selection:
-        # Swept low at t=100. Lower high originating final downward leg is at t=80 (1.1050).
-        swept_swing = {'type': 'LOW', 'price': 1.0950, 'time': 100, 'isValid': True}
+    def test_choch_1_bullish_sweep_followed_by_lh_selection(self):
+        # 1. Bullish sweep followed by correct LH selection
+        sweep_time = 100
         swings = [
-            {'type': 'HIGH', 'price': 1.1100, 'time': 40, 'isValid': True},   # Older high
-            {'type': 'HIGH', 'price': 1.1050, 'time': 80, 'isValid': True},   # LH originating final leg into swept low
-            {'type': 'HIGH', 'price': 1.1080, 'time': 120, 'isValid': True},  # Post-sweep high (invalid)
+            {'type': 'HIGH', 'price': 1.1100, 'time': 40, 'bar_index': 10, 'isValid': True},   # Older high
+            {'type': 'HIGH', 'price': 1.1050, 'time': 80, 'bar_index': 5, 'isValid': True},    # LH originating final leg into swept low
+            {'type': 'HIGH', 'price': 1.1080, 'time': 120, 'bar_index': 1, 'isValid': True},   # Post-sweep high (invalid)
         ]
-        choch_swing = self._find_choch_level("BUY", swept_swing, swings)
+        choch_swing = self._find_choch_level("BUY", sweep_time, swings)
         self.assertIsNotNone(choch_swing)
         self.assertEqual(choch_swing['time'], 80)
         self.assertEqual(choch_swing['price'], 1.1050)
 
-    def test_choch_2_bearish_swing_selection(self):
-        # 2. Correct bearish CHoCH swing selection:
-        # Swept high at t=100. Higher low originating final upward leg is at t=80 (1.1020).
-        swept_swing = {'type': 'HIGH', 'price': 1.1150, 'time': 100, 'isValid': True}
+    def test_choch_2_bearish_sweep_followed_by_hl_selection(self):
+        # 2. Bearish sweep followed by correct HL selection
+        sweep_time = 100
         swings = [
-            {'type': 'LOW', 'price': 1.0900, 'time': 40, 'isValid': True},   # Older low
-            {'type': 'LOW', 'price': 1.1020, 'time': 80, 'isValid': True},   # HL originating final leg into swept high
-            {'type': 'LOW', 'price': 1.0980, 'time': 120, 'isValid': True},  # Post-sweep low (invalid)
+            {'type': 'LOW', 'price': 1.0900, 'time': 40, 'bar_index': 10, 'isValid': True},   # Older low
+            {'type': 'LOW', 'price': 1.1020, 'time': 80, 'bar_index': 5, 'isValid': True},    # HL originating final leg into swept high
+            {'type': 'LOW', 'price': 1.0980, 'time': 120, 'bar_index': 1, 'isValid': True},   # Post-sweep low (invalid)
         ]
-        choch_swing = self._find_choch_level("SELL", swept_swing, swings)
+        choch_swing = self._find_choch_level("SELL", sweep_time, swings)
         self.assertIsNotNone(choch_swing)
         self.assertEqual(choch_swing['time'], 80)
         self.assertEqual(choch_swing['price'], 1.1020)
 
-    def test_choch_3_multiple_candidate_swings_selection(self):
-        # 3. Multiple candidate swings where ONLY the swing originating the final leg is valid:
-        swept_swing = {'type': 'LOW', 'price': 1.0900, 'time': 200, 'isValid': True}
+    def test_choch_3_multiple_confirmed_swings_final_leg_selected(self):
+        # 3. Multiple confirmed swings where ONLY the swing originating the final leg is selected
+        sweep_time = 200
         swings = [
-            {'type': 'HIGH', 'price': 1.1200, 'time': 50, 'isValid': True},   # Global high / early LH
-            {'type': 'HIGH', 'price': 1.1100, 'time': 100, 'isValid': True},  # Intermediate LH
-            {'type': 'HIGH', 'price': 1.1040, 'time': 180, 'isValid': True},  # LH directly originating final leg into t=200 low
+            {'type': 'HIGH', 'price': 1.1200, 'time': 50, 'bar_index': 20, 'isValid': True},   # Global high
+            {'type': 'HIGH', 'price': 1.1100, 'time': 100, 'bar_index': 12, 'isValid': True},  # Intermediate LH
+            {'type': 'HIGH', 'price': 1.1040, 'time': 180, 'bar_index': 4, 'isValid': True},   # LH directly originating final leg
         ]
-        choch_swing = self._find_choch_level("BUY", swept_swing, swings)
+        choch_swing = self._find_choch_level("BUY", sweep_time, swings)
         self.assertIsNotNone(choch_swing)
         self.assertEqual(choch_swing['price'], 1.1040)
-        self.assertNotEqual(choch_swing['price'], 1.1200)
-        self.assertNotEqual(choch_swing['price'], 1.1100)
 
     def test_choch_4_sweep_without_choch(self):
         # 4. Sweep without CHoCH:
-        # Valid sweep occurs, but completed M15 candles fail to close above LH price (1.1060)
+        # Valid sweep occurs, but completed M15 candle body fails to close above LH price (1.1060)
         choch_lh = {'type': 'HIGH', 'price': 1.1060, 'time': 80, 'isValid': True}
         bar1_candle = {'open': 1.1020, 'high': 1.1058, 'low': 1.1015, 'close': 1.1050} # Close <= LH
         is_choch = self._check_m15_choch("BUY", choch_lh, bar1_candle)
@@ -373,10 +527,10 @@ class TestSMCEngineRules(unittest.TestCase):
 
     def test_choch_5_choch_without_valid_sweep(self):
         # 5. CHoCH without a valid sweep:
-        # If swept swing is invalid or missing, FindCHoCHLevel returns None and no CHoCH can be confirmed
-        invalid_swept_swing = {'type': 'LOW', 'price': 1.0900, 'time': 0, 'isValid': False}
-        swings = [{'type': 'HIGH', 'price': 1.1050, 'time': 80, 'isValid': True}]
-        choch_swing = self._find_choch_level("BUY", invalid_swept_swing, swings)
+        # If sweep_time is invalid (<= 0) or no sweep occurred, FindCHoCHLevel returns None
+        invalid_sweep_time = 0
+        swings = [{'type': 'HIGH', 'price': 1.1050, 'time': 80, 'bar_index': 5, 'isValid': True}]
+        choch_swing = self._find_choch_level("BUY", invalid_sweep_time, swings)
         self.assertIsNone(choch_swing)
 
         bar1_candle = {'open': 1.1040, 'high': 1.1070, 'low': 1.1035, 'close': 1.1065}
@@ -384,16 +538,26 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertFalse(is_choch)
 
     def test_choch_6_wick_only_break_does_not_qualify(self):
-        # 6. Wick-only break does not qualify:
+        # 6. Wick-only break does not confirm CHoCH:
         # High wicks above LH (1.1060), but body close is 1.1055 <= 1.1060
         choch_lh = {'type': 'HIGH', 'price': 1.1060, 'time': 80, 'isValid': True}
         wick_break_bar1 = {'open': 1.1030, 'high': 1.1075, 'low': 1.1025, 'close': 1.1055}
         is_choch = self._check_m15_choch("BUY", choch_lh, wick_break_bar1)
         self.assertFalse(is_choch)
 
-    def test_choch_7_forming_candle_cannot_confirm_choch(self):
-        # 7. Forming candle cannot confirm CHoCH:
-        # Bar 0 (forming candle) has close 1.1070 > LH (1.1060), but completed bar 1 close is 1.1050 <= 1.1060
+    def test_choch_7_unconfirmed_swing_cannot_be_used(self):
+        # 7. Unconfirmed swing (bar_index < 3) cannot be used for CHoCH
+        sweep_time = 200
+        swings = [
+            {'type': 'HIGH', 'price': 1.1080, 'time': 190, 'bar_index': 1, 'isValid': True},   # Unconfirmed swing (bar 1 < 3)
+            {'type': 'HIGH', 'price': 1.1040, 'time': 150, 'bar_index': 6, 'isValid': True},   # Confirmed swing (bar 6 >= 3)
+        ]
+        choch_swing = self._find_choch_level("BUY", sweep_time, swings)
+        self.assertIsNotNone(choch_swing)
+        self.assertEqual(choch_swing['price'], 1.1040) # Unconfirmed swing at bar 1 skipped
+
+    def test_choch_8_current_forming_candle_cannot_confirm_choch(self):
+        # 8. Current forming candle (bar 0) cannot confirm CHoCH
         choch_lh = {'type': 'HIGH', 'price': 1.1060, 'time': 80, 'isValid': True}
         bar0_forming = {'open': 1.1040, 'high': 1.1080, 'low': 1.1035, 'close': 1.1070}
         bar1_completed = {'open': 1.1020, 'high': 1.1055, 'low': 1.1015, 'close': 1.1050}
@@ -402,8 +566,15 @@ class TestSMCEngineRules(unittest.TestCase):
         is_choch_completed = self._check_m15_choch("BUY", choch_lh, bar1_completed)
         self.assertFalse(is_choch_completed)
 
-        # Confirming that code only evaluates bar 1, not forming bar 0
+        # Confirm that bar 0 is separate and not evaluated by completion check
         self.assertNotEqual(bar1_completed['close'], bar0_forming['close'])
+
+    def test_choch_9_ambiguous_structure_does_not_invent_rules(self):
+        # 9. Ambiguous structure where no confirmed swing exists prior to sweep -> returns None without inventing rules
+        sweep_time = 100
+        swings = [] # No confirmed prior swings in history
+        choch_swing = self._find_choch_level("BUY", sweep_time, swings)
+        self.assertIsNone(choch_swing, "If no confirmed swing exists in history prior to sweep, return None without inventing arbitrary fallback rules")
 
 
     # --- 3. M5 EXECUTION & DISPLACEMENT RULES ---

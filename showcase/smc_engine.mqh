@@ -590,6 +590,11 @@ bool Find4HFVG(string symbol, int c3BarIndex, SMCPOI &outPOI)
 }
 
 // Detect 4H Order Block at bar index obBarIndex
+// Bullish OB: final bearish/down-close candle before the qualifying bullish move (producing BOS and FVG)
+// Bearish OB: final bullish/up-close candle before the qualifying bearish move (producing BOS and FVG)
+// Source Limitation Note: FVG does not require an arbitrary immediate-next-candle constraint, but must
+// be produced within the qualifying displacement move originating after the candidate OB bar without an
+// intervening opposite-direction candle starting an unrelated move.
 bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
 {
    ZeroMemory(outPOI);
@@ -603,34 +608,59 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
 
    if(openOB == 0 || closeOB == 0) return false;
 
-   // Bullish OB: final down-close candle before qualifying bullish displacement (producing FVG & BOS/CHoCH)
+   // Bullish OB: final down-close candle before qualifying bullish displacement/move
    if(closeOB < openOB)
    {
-      // C2 is the aggressive displacement candle directly following C1 (the OB bar obBarIndex)
-      int c2BarIndex = obBarIndex - 1;
-      int c3BarIndex = obBarIndex - 2;
-      double openC2  = iOpen(symbol, SMC_4H_Timeframe, c2BarIndex);
-      double closeC2 = iClose(symbol, SMC_4H_Timeframe, c2BarIndex);
-      double lowC3   = iLow(symbol, SMC_4H_Timeframe, c3BarIndex);
+      // 1. The candle immediately following candidate OB (obBarIndex - 1) must be non-bearish (close >= open)
+      //    to ensure obBarIndex is the final down-close candle before the move.
+      int nextBar = obBarIndex - 1;
+      if(nextBar < 1) return false;
+      double openNext  = iOpen(symbol, SMC_4H_Timeframe, nextBar);
+      double closeNext = iClose(symbol, SMC_4H_Timeframe, nextBar);
+      if(closeNext < openNext) return false;
 
-      // 1. C2 must be bullish displacement (Close > Open)
-      if(closeC2 <= openC2) return false;
-
-      // 2. The immediate 3-candle sequence (C1=obBarIndex, C2=c2BarIndex, C3=c3BarIndex) forms a valid FVG: Low(C3) > High(C1)
-      if(lowC3 <= highOB) return false;
-
-      // 3. The displacement candle C2 (or C3) produces structural break (BOS/CHoCH) of prior 4H swing high
-      bool producesBOS = false;
+      // 2. Find prior 4H swing high formed at or before obBarIndex for BOS confirmation
       SMCSwing prevHigh;
-      if(FindMostRecentSwingHigh(symbol, SMC_4H_Timeframe, 50, prevHigh, obBarIndex + 1))
+      if(!FindMostRecentSwingHigh(symbol, SMC_4H_Timeframe, 50, prevHigh, obBarIndex + 1))
+         return false;
+
+      // 3. Scan the move following obBarIndex (from obBarIndex - 1 down to 1) for:
+      //    - Qualifying BOS: a candle body close above prevHigh.price
+      //    - Associated bullish FVG: a 3-candle sequence (c1, c2, c3) where Low(c3) > High(c1)
+      //    The move must not encounter another down-close candle before establishing BOS and FVG.
+      bool hasBOS = false;
+      bool hasFVG = false;
+
+      for(int k = obBarIndex - 1; k >= 1; k--)
       {
-         double closeC3 = iClose(symbol, SMC_4H_Timeframe, c3BarIndex);
-         if(closeC2 > prevHigh.price || closeC3 > prevHigh.price)
+         double opK = iOpen(symbol, SMC_4H_Timeframe, k);
+         double clK = iClose(symbol, SMC_4H_Timeframe, k);
+
+         // Check BOS
+         if(clK > prevHigh.price)
+            hasBOS = true;
+
+         // Check FVG with c1 at or after obBarIndex (i.e. c1 <= obBarIndex) and c3 = k
+         int c1 = k + 2;
+         int c3 = k;
+         if(c1 <= obBarIndex && c3 >= 1)
          {
-            producesBOS = true;
+            double highC1 = iHigh(symbol, SMC_4H_Timeframe, c1);
+            double lowC3  = iLow(symbol, SMC_4H_Timeframe, c3);
+            if(highC1 > 0 && lowC3 > highC1)
+               hasFVG = true;
          }
+
+         if(hasBOS && hasFVG)
+            break;
+
+         // If we hit another down-close candle before producing both BOS and FVG,
+         // then candidate obBarIndex is not the final down-close candle for this move.
+         if(clK < opK && k < obBarIndex - 1)
+            return false;
       }
-      if(!producesBOS) return false;
+
+      if(!hasBOS || !hasFVG) return false;
 
       outPOI.type      = POI_TYPE_DEMAND;
       outPOI.bottom    = lowOB;
@@ -651,34 +681,59 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
       }
       return true;
    }
-   // Bearish OB: final up-close candle before qualifying bearish displacement (producing FVG & BOS/CHoCH)
+   // Bearish OB: final up-close candle before qualifying bearish displacement/move
    else if(closeOB > openOB)
    {
-      // C2 is the aggressive displacement candle directly following C1 (the OB bar obBarIndex)
-      int c2BarIndex = obBarIndex - 1;
-      int c3BarIndex = obBarIndex - 2;
-      double openC2  = iOpen(symbol, SMC_4H_Timeframe, c2BarIndex);
-      double closeC2 = iClose(symbol, SMC_4H_Timeframe, c2BarIndex);
-      double highC3  = iHigh(symbol, SMC_4H_Timeframe, c3BarIndex);
+      // 1. The candle immediately following candidate OB (obBarIndex - 1) must be non-bullish (close <= open)
+      //    to ensure obBarIndex is the final up-close candle before the move.
+      int nextBar = obBarIndex - 1;
+      if(nextBar < 1) return false;
+      double openNext  = iOpen(symbol, SMC_4H_Timeframe, nextBar);
+      double closeNext = iClose(symbol, SMC_4H_Timeframe, nextBar);
+      if(closeNext > openNext) return false;
 
-      // 1. C2 must be bearish displacement (Close < Open)
-      if(closeC2 >= openC2) return false;
-
-      // 2. The immediate 3-candle sequence (C1=obBarIndex, C2=c2BarIndex, C3=c3BarIndex) forms a valid FVG: High(C3) < Low(C1)
-      if(highC3 >= lowOB) return false;
-
-      // 3. The displacement candle C2 (or C3) produces structural break (BOS/CHoCH) of prior 4H swing low
-      bool producesBOS = false;
+      // 2. Find prior 4H swing low formed at or before obBarIndex for BOS confirmation
       SMCSwing prevLow;
-      if(FindMostRecentSwingLow(symbol, SMC_4H_Timeframe, 50, prevLow, obBarIndex + 1))
+      if(!FindMostRecentSwingLow(symbol, SMC_4H_Timeframe, 50, prevLow, obBarIndex + 1))
+         return false;
+
+      // 3. Scan the move following obBarIndex (from obBarIndex - 1 down to 1) for:
+      //    - Qualifying BOS: a candle body close below prevLow.price
+      //    - Associated bearish FVG: a 3-candle sequence (c1, c2, c3) where High(c3) < Low(c1)
+      //    The move must not encounter another up-close candle before establishing BOS and FVG.
+      bool hasBOS = false;
+      bool hasFVG = false;
+
+      for(int k = obBarIndex - 1; k >= 1; k--)
       {
-         double closeC3 = iClose(symbol, SMC_4H_Timeframe, c3BarIndex);
-         if(closeC2 < prevLow.price || closeC3 < prevLow.price)
+         double opK = iOpen(symbol, SMC_4H_Timeframe, k);
+         double clK = iClose(symbol, SMC_4H_Timeframe, k);
+
+         // Check BOS
+         if(clK < prevLow.price)
+            hasBOS = true;
+
+         // Check FVG with c1 at or after obBarIndex (i.e. c1 <= obBarIndex) and c3 = k
+         int c1 = k + 2;
+         int c3 = k;
+         if(c1 <= obBarIndex && c3 >= 1)
          {
-            producesBOS = true;
+            double lowC1  = iLow(symbol, SMC_4H_Timeframe, c1);
+            double highC3 = iHigh(symbol, SMC_4H_Timeframe, c3);
+            if(lowC1 > 0 && highC3 < lowC1)
+               hasFVG = true;
          }
+
+         if(hasBOS && hasFVG)
+            break;
+
+         // If we hit another up-close candle before producing both BOS and FVG,
+         // then candidate obBarIndex is not the final up-close candle for this move.
+         if(clK > opK && k < obBarIndex - 1)
+            return false;
       }
-      if(!producesBOS) return false;
+
+      if(!hasBOS || !hasFVG) return false;
 
       outPOI.type      = POI_TYPE_SUPPLY;
       outPOI.bottom    = lowOB;
@@ -873,60 +928,12 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
 //+------------------------------------------------------------------+
 
 // Deterministic CHoCH swing selection:
-// Scans backward from swept extreme bar across available M15 history (without artificial numeric cap)
-// to identify the last confirmed swing (LH for Buy, HL for Sell) directly originating the final leg.
-// Deterministic Limitation Note: If no confirmed swing exists in available history prior to the sweep,
-// FindCHoCHLevel returns false and the setup is safely invalidated.
-bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &sweptSwing, SMCSwing &outChochSwing)
-{
-   ZeroMemory(outChochSwing);
-
-   if(!sweptSwing.isValid || sweptSwing.time <= 0) return false;
-
-   int sweptBar = iBarShift(symbol, SMC_M15_Timeframe, sweptSwing.time, false);
-   if(sweptBar < 0) return false;
-
-   int startBar = MathMax(3, sweptBar);
-   int totalBars = iBars(symbol, SMC_M15_Timeframe);
-   int maxBarIndex = (totalBars > 0) ? (totalBars - 3) : (startBar + 300);
-
-   if(direction == SIGNAL_BUY)
-   {
-      // Search backward from swept low for the confirmed M15 Lower High
-      // that directly originated the final downward leg into that swept low
-      for(int i = startBar; i <= maxBarIndex; i++)
-      {
-         SMCSwing swing;
-         if(Get5BarSwingHigh(symbol, SMC_M15_Timeframe, i, swing))
-         {
-            if(swing.time < sweptSwing.time)
-            {
-               outChochSwing = swing;
-               return true;
-            }
-         }
-      }
-   }
-   else if(direction == SIGNAL_SELL)
-   {
-      // Search backward from swept high for the confirmed M15 Higher Low
-      // that directly originated the final upward leg into that swept high
-      for(int i = startBar; i <= maxBarIndex; i++)
-      {
-         SMCSwing swing;
-         if(Get5BarSwingLow(symbol, SMC_M15_Timeframe, i, swing))
-         {
-            if(swing.time < sweptSwing.time)
-            {
-               outChochSwing = swing;
-               return true;
-            }
-         }
-      }
-   }
-   return false;
-}
-
+// Scans backward from swept extreme timestamp (sweepTime) across available M15 history to identify
+// the confirmed 5-bar M15 swing (Lower High for Buy, Higher Low for Sell) that directly originated
+// the final structural leg into the swept extreme.
+// Source Limitation Note: If no confirmed 5-bar swing exists in available M15 history prior to sweepTime,
+// or if structure is ambiguous without explicit source rules, FindCHoCHLevel returns false and the setup
+// is safely invalidated rather than inventing unconfirmed swings or arbitrary lookback/threshold rules.
 bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTime, SMCSwing &outChochSwing)
 {
    ZeroMemory(outChochSwing);
@@ -942,6 +949,8 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
 
    if(direction == SIGNAL_BUY)
    {
+      // Search backward from swept extreme for the confirmed M15 Lower High
+      // that directly originated the final downward leg into that swept low
       for(int i = startBar; i <= maxBarIndex; i++)
       {
          SMCSwing swing;
@@ -957,6 +966,8 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
    }
    else if(direction == SIGNAL_SELL)
    {
+      // Search backward from swept extreme for the confirmed M15 Higher Low
+      // that directly originated the final upward leg into that swept high
       for(int i = startBar; i <= maxBarIndex; i++)
       {
          SMCSwing swing;
@@ -971,6 +982,12 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
       }
    }
    return false;
+}
+
+bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &sweptSwing, SMCSwing &outChochSwing)
+{
+   if(!sweptSwing.isValid || sweptSwing.time <= 0) return false;
+   return FindCHoCHLevel(symbol, direction, sweptSwing.time, outChochSwing);
 }
 
 bool CheckM15CHoCH(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &chochSwing)
@@ -1229,9 +1246,9 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_M15_SWEEP_DETECTED:
       {
-         // Search for CHoCH candidate swing in history prior to sweep
+         // Search for CHoCH candidate swing in history prior to swept extreme time
          SMCSwing chochSwing;
-         if(FindCHoCHLevel(symbol, setup.direction, setup.m15SweptSwing, chochSwing))
+         if(FindCHoCHLevel(symbol, setup.direction, setup.sweepTime, chochSwing))
          {
             setup.m15ChochSwing = chochSwing;
             setup.chochPrice    = chochSwing.price;
