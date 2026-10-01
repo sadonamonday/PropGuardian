@@ -19,7 +19,7 @@ The following components are fully implemented in `showcase/smc_engine.mqh` and 
   - CHoCH selection identifies the confirmed M15 swing (Lower High for Buy, Higher Low for Sell) that directly originated/preceded the final leg into the sweep extreme.
   - Requires completed M15 candle BODY close beyond the CHoCH level.
 - **M5 Execution, Displacement & FVG Lifecycle**:
-  - M5 execution structure break requiring directionally matching breakout candle (`Close > Open` for Buy, `Close < Open` for Sell) and qualifying 3-candle FVG created by that displacement event.
+  - M5 execution structure break requiring directionally matching C2 displacement candle (`Close > Open` for Buy, `Close < Open` for Sell) body closing past confirmed M5 structure, and C3 closing to confirm the 3-candle FVG pattern.
   - BUY LIMIT / SELL LIMIT placed at exact 50% FVG midpoint.
   - FVG lifecycle tracking: invalidation on completed M5 candle body close beyond C1 boundary cancels setup and active pending limit order.
 - **Structural SL & Structural TP**:
@@ -48,8 +48,8 @@ The following fixes were made in this iteration:
    - Enforced M15 candle BODY close requirement; wick-only breaks remain sweeps.
 
 3. **M5 Execution & Displacement-Tied FVG**:
-   - Updated `CheckM5DisplacementAndFVG()` to ensure the FVG used for execution is directly created by the qualifying M5 displacement sequence.
-   - Enforced directional candle requirement (`Close > Open` for Buy, `Close < Open` for Sell).
+   - Updated `CheckM5DisplacementAndFVG()` to ensure C2 (middle candle) is evaluated as the displacement candle associated with the structural break, while C3 confirms the 3-candle FVG.
+   - Enforced directional candle requirement on C2 (`Close > Open` for Buy, `Close < Open` for Sell).
    - Ensured setup invalidation cancels any active pending limit order via `TRADE_ACTION_REMOVE`.
 
 4. **Structural TP Strict Target Rule**:

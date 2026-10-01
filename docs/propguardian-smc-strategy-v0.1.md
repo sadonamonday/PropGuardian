@@ -70,10 +70,12 @@ PropGuardian SMC Strategy v0.1 implements a deterministic multi-timeframe Smart 
 ## 6. M5 Execution, Displacement & FVG
 - **M5 Execution Structure**: Requires M5 structural break confirmed by candle BODY close above relevant confirmed M5 swing high (Long) or below M5 swing low (Short).
 - **M5 Displacement Proxy & FVG**:
-  - Displacement proxy: Completed M5 candle is directionally matching (`Close > Open` for Buy, `Close < Open` for Sell), body closes beyond latest confirmed M5 swing, and a qualifying FVG is produced by that displacement sequence.
+  - Displacement proxy: Completed M5 candle C2 is the aggressive displacement candle, directionally matching (`Close > Open` for Buy, `Close < Open` for Sell) and body closing beyond the relevant confirmed M5 swing.
+  - *3-Candle Sequence*: C1 = first candle, C2 = middle displacement candle, C3 = third candle.
   - *Bullish FVG*: `Low(C3) > High(C1)`. Midpoint = `(High(C1) + Low(C3)) / 2.0`.
   - *Bearish FVG*: `High(C3) < Low(C1)`. Midpoint = `(Low(C1) + High(C3)) / 2.0`.
-  - FVG boundaries use candle WICKS (Candle 1 and Candle 3). Confirmed on Candle 3 close.
+  - FVG boundaries use candle WICKS (Candle 1 and Candle 3). Confirmed after Candle 3 closes.
+  - C2 is treated as the displacement candle, while C3 confirms the completed FVG pattern.
   - The exact FVG produced by the displacement sequence is stored and monitored through its lifecycle.
 - **Order Placement, Retrace & Mitigation**:
   - BUY LIMIT / SELL LIMIT placed at 50% FVG midpoint.
