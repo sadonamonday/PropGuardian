@@ -777,25 +777,34 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
 //|   Completed M15 candle BODY CLOSES below that Higher Low.        |
 //+------------------------------------------------------------------+
 
-bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTime, SMCSwing &outChochSwing)
+// Deterministic CHoCH swing selection:
+// Scans backward from swept extreme bar across available M15 history (without artificial numeric cap)
+// to identify the last confirmed swing (LH for Buy, HL for Sell) directly originating the final leg.
+// Deterministic Limitation Note: If no confirmed swing exists in available history prior to the sweep,
+// FindCHoCHLevel returns false and the setup is safely invalidated.
+bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &sweptSwing, SMCSwing &outChochSwing)
 {
    ZeroMemory(outChochSwing);
 
-   int sweepBar = iBarShift(symbol, SMC_M15_Timeframe, sweepTime, false);
-   if(sweepBar < 0) sweepBar = 3;
+   if(!sweptSwing.isValid || sweptSwing.time <= 0) return false;
 
-   int startBar = MathMax(3, sweepBar);
-   int maxLookback = startBar + 60;
+   int sweptBar = iBarShift(symbol, SMC_M15_Timeframe, sweptSwing.time, false);
+   if(sweptBar < 0) return false;
+
+   int startBar = MathMax(3, sweptBar);
+   int totalBars = iBars(symbol, SMC_M15_Timeframe);
+   int maxBarIndex = (totalBars > 0) ? (totalBars - 3) : (startBar + 300);
 
    if(direction == SIGNAL_BUY)
    {
-      // Traverse backward from sweep extreme to find the confirmed Lower High originating the final downward leg
-      for(int i = startBar; i <= maxLookback; i++)
+      // Search backward from swept low for the confirmed M15 Lower High
+      // that directly originated the final downward leg into that swept low
+      for(int i = startBar; i <= maxBarIndex; i++)
       {
          SMCSwing swing;
          if(Get5BarSwingHigh(symbol, SMC_M15_Timeframe, i, swing))
          {
-            if(swing.time <= sweepTime)
+            if(swing.time < sweptSwing.time)
             {
                outChochSwing = swing;
                return true;
@@ -805,13 +814,60 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
    }
    else if(direction == SIGNAL_SELL)
    {
-      // Traverse backward from sweep extreme to find the confirmed Higher Low preceding the final upward leg
-      for(int i = startBar; i <= maxLookback; i++)
+      // Search backward from swept high for the confirmed M15 Higher Low
+      // that directly originated the final upward leg into that swept high
+      for(int i = startBar; i <= maxBarIndex; i++)
       {
          SMCSwing swing;
          if(Get5BarSwingLow(symbol, SMC_M15_Timeframe, i, swing))
          {
-            if(swing.time <= sweepTime)
+            if(swing.time < sweptSwing.time)
+            {
+               outChochSwing = swing;
+               return true;
+            }
+         }
+      }
+   }
+   return false;
+}
+
+bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTime, SMCSwing &outChochSwing)
+{
+   ZeroMemory(outChochSwing);
+
+   if(sweepTime <= 0) return false;
+
+   int sweepBar = iBarShift(symbol, SMC_M15_Timeframe, sweepTime, false);
+   if(sweepBar < 0) return false;
+
+   int startBar = MathMax(3, sweepBar);
+   int totalBars = iBars(symbol, SMC_M15_Timeframe);
+   int maxBarIndex = (totalBars > 0) ? (totalBars - 3) : (startBar + 300);
+
+   if(direction == SIGNAL_BUY)
+   {
+      for(int i = startBar; i <= maxBarIndex; i++)
+      {
+         SMCSwing swing;
+         if(Get5BarSwingHigh(symbol, SMC_M15_Timeframe, i, swing))
+         {
+            if(swing.time < sweepTime)
+            {
+               outChochSwing = swing;
+               return true;
+            }
+         }
+      }
+   }
+   else if(direction == SIGNAL_SELL)
+   {
+      for(int i = startBar; i <= maxBarIndex; i++)
+      {
+         SMCSwing swing;
+         if(Get5BarSwingLow(symbol, SMC_M15_Timeframe, i, swing))
+         {
+            if(swing.time < sweepTime)
             {
                outChochSwing = swing;
                return true;
@@ -1071,7 +1127,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
       {
          // Search for CHoCH candidate swing
          SMCSwing chochSwing;
-         if(FindCHoCHLevel(symbol, setup.direction, setup.sweepTime, chochSwing))
+         if(FindCHoCHLevel(symbol, setup.direction, setup.m15SweptSwing, chochSwing))
          {
             setup.m15ChochSwing = chochSwing;
             setup.chochPrice    = chochSwing.price;
