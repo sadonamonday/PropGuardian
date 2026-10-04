@@ -611,29 +611,19 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
    // Bullish OB: final down-close candle before qualifying bullish displacement/move
    if(closeOB < openOB)
    {
-      // 1. The candle immediately following candidate OB (obBarIndex - 1) must be non-bearish (close >= open)
-      //    to ensure obBarIndex is the final down-close candle before the move.
-      int nextBar = obBarIndex - 1;
-      if(nextBar < 1) return false;
-      double openNext  = iOpen(symbol, SMC_4H_Timeframe, nextBar);
-      double closeNext = iClose(symbol, SMC_4H_Timeframe, nextBar);
-      if(closeNext < openNext) return false;
-
-      // 2. Find prior 4H swing high formed at or before obBarIndex for BOS confirmation
+      // 1. Find prior 4H swing high formed at or before obBarIndex for BOS confirmation
       SMCSwing prevHigh;
       if(!FindMostRecentSwingHigh(symbol, SMC_4H_Timeframe, 50, prevHigh, obBarIndex + 1))
          return false;
 
-      // 3. Scan the move following obBarIndex (from obBarIndex - 1 down to 1) for:
+      // 2. Scan the move following obBarIndex (from obBarIndex - 1 down to 1) for:
       //    - Qualifying BOS: a candle body close above prevHigh.price
-      //    - Associated bullish FVG: a 3-candle sequence (c1, c2, c3) where Low(c3) > High(c1)
-      //    The move must not encounter another down-close candle before establishing BOS and FVG.
+      //    - Associated bullish FVG: a 3-candle sequence (c1, c2, c3) where Low(c3) > High(c1) and c1 <= obBarIndex
       bool hasBOS = false;
       bool hasFVG = false;
 
       for(int k = obBarIndex - 1; k >= 1; k--)
       {
-         double opK = iOpen(symbol, SMC_4H_Timeframe, k);
          double clK = iClose(symbol, SMC_4H_Timeframe, k);
 
          // Check BOS
@@ -653,11 +643,6 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
 
          if(hasBOS && hasFVG)
             break;
-
-         // If we hit another down-close candle before producing both BOS and FVG,
-         // then candidate obBarIndex is not the final down-close candle for this move.
-         if(clK < opK && k < obBarIndex - 1)
-            return false;
       }
 
       if(!hasBOS || !hasFVG) return false;
@@ -684,29 +669,19 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
    // Bearish OB: final up-close candle before qualifying bearish displacement/move
    else if(closeOB > openOB)
    {
-      // 1. The candle immediately following candidate OB (obBarIndex - 1) must be non-bullish (close <= open)
-      //    to ensure obBarIndex is the final up-close candle before the move.
-      int nextBar = obBarIndex - 1;
-      if(nextBar < 1) return false;
-      double openNext  = iOpen(symbol, SMC_4H_Timeframe, nextBar);
-      double closeNext = iClose(symbol, SMC_4H_Timeframe, nextBar);
-      if(closeNext > openNext) return false;
-
-      // 2. Find prior 4H swing low formed at or before obBarIndex for BOS confirmation
+      // 1. Find prior 4H swing low formed at or before obBarIndex for BOS confirmation
       SMCSwing prevLow;
       if(!FindMostRecentSwingLow(symbol, SMC_4H_Timeframe, 50, prevLow, obBarIndex + 1))
          return false;
 
-      // 3. Scan the move following obBarIndex (from obBarIndex - 1 down to 1) for:
+      // 2. Scan the move following obBarIndex (from obBarIndex - 1 down to 1) for:
       //    - Qualifying BOS: a candle body close below prevLow.price
-      //    - Associated bearish FVG: a 3-candle sequence (c1, c2, c3) where High(c3) < Low(c1)
-      //    The move must not encounter another up-close candle before establishing BOS and FVG.
+      //    - Associated bearish FVG: a 3-candle sequence (c1, c2, c3) where High(c3) < Low(c1) and c1 <= obBarIndex
       bool hasBOS = false;
       bool hasFVG = false;
 
       for(int k = obBarIndex - 1; k >= 1; k--)
       {
-         double opK = iOpen(symbol, SMC_4H_Timeframe, k);
          double clK = iClose(symbol, SMC_4H_Timeframe, k);
 
          // Check BOS
@@ -726,11 +701,6 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
 
          if(hasBOS && hasFVG)
             break;
-
-         // If we hit another up-close candle before producing both BOS and FVG,
-         // then candidate obBarIndex is not the final up-close candle for this move.
-         if(clK > opK && k < obBarIndex - 1)
-            return false;
       }
 
       if(!hasBOS || !hasFVG) return false;
@@ -949,8 +919,11 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
 
    if(direction == SIGNAL_BUY)
    {
-      // Search backward from swept extreme for the confirmed M15 Lower High
-      // that directly originated the final downward leg into that swept low
+      // 1. Find the most recent confirmed 5-bar M15 swing high before sweepTime (swing1)
+      SMCSwing swing1;
+      ZeroMemory(swing1);
+      int swing1Bar = -1;
+
       for(int i = startBar; i <= maxBarIndex; i++)
       {
          SMCSwing swing;
@@ -958,16 +931,53 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
          {
             if(swing.time < sweepTime)
             {
-               outChochSwing = swing;
-               return true;
+               swing1 = swing;
+               swing1Bar = i;
+               break;
             }
          }
       }
+
+      if(!swing1.isValid || swing1Bar < 0)
+         return false;
+
+      // 2. Find the preceding confirmed 5-bar M15 swing high before swing1 (swing2)
+      SMCSwing swing2;
+      ZeroMemory(swing2);
+
+      for(int i = swing1Bar + 1; i <= maxBarIndex; i++)
+      {
+         SMCSwing swing;
+         if(Get5BarSwingHigh(symbol, SMC_M15_Timeframe, i, swing))
+         {
+            if(swing.time < swing1.time)
+            {
+               swing2 = swing;
+               break;
+            }
+         }
+      }
+
+      if(!swing2.isValid)
+         return false; // Structure cannot be established deterministically -> Return no CHoCH level
+
+      // 3. Verify structural relationship: swing1 must be a Lower High relative to swing2
+      if(swing1.price < swing2.price)
+      {
+         outChochSwing = swing1;
+         return true;
+      }
+
+      // If swing1 is NOT a Lower High, do not fall back to swing2 or older highs. Return false.
+      return false;
    }
    else if(direction == SIGNAL_SELL)
    {
-      // Search backward from swept extreme for the confirmed M15 Higher Low
-      // that directly originated the final upward leg into that swept high
+      // 1. Find the most recent confirmed 5-bar M15 swing low before sweepTime (swing1)
+      SMCSwing swing1;
+      ZeroMemory(swing1);
+      int swing1Bar = -1;
+
       for(int i = startBar; i <= maxBarIndex; i++)
       {
          SMCSwing swing;
@@ -975,11 +985,45 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
          {
             if(swing.time < sweepTime)
             {
-               outChochSwing = swing;
-               return true;
+               swing1 = swing;
+               swing1Bar = i;
+               break;
             }
          }
       }
+
+      if(!swing1.isValid || swing1Bar < 0)
+         return false;
+
+      // 2. Find the preceding confirmed 5-bar M15 swing low before swing1 (swing2)
+      SMCSwing swing2;
+      ZeroMemory(swing2);
+
+      for(int i = swing1Bar + 1; i <= maxBarIndex; i++)
+      {
+         SMCSwing swing;
+         if(Get5BarSwingLow(symbol, SMC_M15_Timeframe, i, swing))
+         {
+            if(swing.time < swing1.time)
+            {
+               swing2 = swing;
+               break;
+            }
+         }
+      }
+
+      if(!swing2.isValid)
+         return false; // Structure cannot be established deterministically -> Return no CHoCH level
+
+      // 3. Verify structural relationship: swing1 must be a Higher Low relative to swing2
+      if(swing1.price > swing2.price)
+      {
+         outChochSwing = swing1;
+         return true;
+      }
+
+      // If swing1 is NOT a Higher Low, do not fall back to swing2 or older lows. Return false.
+      return false;
    }
    return false;
 }
