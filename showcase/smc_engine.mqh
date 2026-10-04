@@ -13,6 +13,8 @@
 
 #property strict
 
+#include "signal_engine.mqh"
+
 // --- Timeframe Inputs & Strategy Toggles ---
 input bool              SMC_UseStrategy      = true;         // Enable PropGuardian SMC Strategy v0.1
 input ENUM_TIMEFRAMES   SMC_4H_Timeframe     = PERIOD_H4;    // Context Timeframe (4H)
