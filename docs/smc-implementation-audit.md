@@ -9,7 +9,7 @@ The following components are fully implemented in `showcase/smc_engine.mqh` and 
   - M15: Intermediate structure, M15 candle intersection with 4H POI, M15 liquidity sweep, M15 CHoCH confirmation (body close).
   - M5: Execution structure, displacement proxy, 3-candle FVG tied directly to displacement event, 50% midpoint entry.
 - **4H POI Provider & Scanner**:
-  - Detection of 4H OB (final opposite candle before displacement + BOS + FVG) and 4H FVG (`Low(C3) > High(C1)` / `High(C3) < Low(C1)`).
+  - Detection of 4H OB (final opposite candle before displacement + associated BOS & FVG in same move) and 4H FVG (`Low(C3) > High(C1)` / `High(C3) < Low(C1)`).
   - Equal status for OB and FVG. Direction filtering matching 4H structural direction.
   - Selection of most recent valid POI.
   - Activation upon completed M15 candle range intersection (`M15 High >= POI Low AND M15 Low <= POI High`).
@@ -37,9 +37,11 @@ The following components are fully implemented in `showcase/smc_engine.mqh` and 
 
 The following fixes were made in this iteration:
 
-1. **4H POI Alignment & Equality**:
-   - Replaced arbitrary point-offset POI zone generation with deterministic 4H OB and 4H FVG scanning and an explicit registry interface (`Register4HPOI` / `GetActive4HPOI`).
-   - OB and FVG treat equal status; direction is strictly filtered by 4H structure (`GetTimeframeStructure`).
+1. **4H POI Alignment & OB Qualification**:
+   - Updated `Find4HOrderBlock()` so that a candidate 4H Order Block is accepted only when a qualifying 3-candle directional move sequence originating after the OB (`c1 <= obBarIndex`) produces BOTH an associated 4H FVG and a 4H BOS confirmed by candle body close.
+   - Replaced separate/unrelated BOS and FVG checks with strict single-move sequence association.
+   - Maintained equal status for 4H OB and FVG; direction strictly filtered by 4H structure (`GetTimeframeStructure`).
+   - Documented engineering search loop bounds (50/40/30/200 bars) as implementation search limits rather than strategy rules.
    - POI activation strictly enforces completed M15 candle range intersection (`M15 High >= POI Low AND M15 Low <= POI High`).
    - POI invalidation enforced (OB: 4H close beyond OB extreme; FVG: completed candle close through C1 boundary).
 
@@ -80,12 +82,12 @@ None in source logic. All strategy requirements and deterministic rules defined 
 ## 5. Tests
 
 ### What Was Tested
-- Executed standard Python test suite in `tests/test_smc_engine.py` (35 unit test cases):
-  - 4H 5-bar swing fractals, 4H OB detection, 4H FVG detection, POI direction filtering, POI selection (most recent), POI intersection, POI invalidation (OB and FVG).
+- Executed standard Python test suite in `tests/test_smc_engine.py` (66 unit test cases):
+  - 4H 5-bar swing fractals, 4H OB detection (10 explicit test cases OB-1 through OB-10 for single-move BOS/FVG association, intervening candles, invalidation, wick vs body close, and absence of arbitrary thresholds), 4H FVG detection, POI direction filtering, POI selection (most recent), POI intersection, POI invalidation (OB and FVG).
   - M15 liquidity sweep detection, M15 CHoCH (bullish & bearish body closes, originating swing selection, wick-only rejection).
   - M5 3-bar swing fractals, M5 displacement proxy, displacement-tied FVG detection, 50% midpoint entry, FVG invalidation, pending order cancellation.
   - Complete trade setup flows, state machine transitions, and rejection paths (no POI, POI without sweep, sweep without CHoCH, CHoCH without M5 confirmation, no valid TP target, pre-trade risk gate rejections, order submission responses).
-- **Result**: `35/35 PASS` (0 errors, 0 failures).
+- **Result**: `66/66 PASS` (0 errors, 0 failures).
 
 ### What Was NOT Tested
 - Live MT5 strategy tester backtests and live broker order routing execution (due to absence of MT5 binary runtime in the environment).
