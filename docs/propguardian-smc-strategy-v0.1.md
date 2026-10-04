@@ -33,9 +33,9 @@ PropGuardian SMC Strategy v0.1 implements a deterministic multi-timeframe Smart 
   - *Bearish OB*: Invalidated when a completed 4H candle closes above the OB high.
   - *FVG*: Invalidated when a completed candle closes through the C1 boundary (`close < fvg.bottom` for bullish, `close > fvg.top` for bearish).
 - **4H Order Block Definition**:
-  - *Bullish OB*: The final bearish/down-close candle before the qualifying bullish move (producing 4H BOS and an associated 4H FVG).
-  - *Bearish OB*: The final bullish/up-close candle before the qualifying bearish move (producing 4H BOS and an associated 4H FVG).
-  - *OB Identification*: Tied directly to the qualifying structural move (producing 4H BOS and associated 4H FVG). Does not impose an unsupported restriction on the immediately adjacent candle state or reject candidate OBs merely because an opposite-close candle occurs during a multi-candle displacement move prior to BOS/FVG.
+  - *Bullish OB*: The final bearish/down-close candle before the qualifying bullish displacement/move (producing 4H BOS and an associated 4H FVG).
+  - *Bearish OB*: The final bullish/up-close candle before the qualifying bearish displacement/move (producing 4H BOS and an associated 4H FVG).
+  - *OB Qualification*: OB selection establishes internal coherence between the candidate OB candle, the qualifying directional move originating after the OB bar, 4H BOS, and an associated 4H FVG. No arbitrary N-candle maximum distance, fixed pip/point displacement threshold, ATR limit, or mandatory immediate-next-candle color restriction is invented. Full High-Low OB boundaries, completed candles only, body-close BOS, wick-to-wick FVG, and OB invalidation on completed 4H candle close beyond the OB extreme are strictly maintained.
 
 ---
 
@@ -62,6 +62,7 @@ PropGuardian SMC Strategy v0.1 implements a deterministic multi-timeframe Smart 
   - *Bullish CHoCH*: Established bearish structure → M15 liquidity sweep occurs → Identify the most recent confirmed 5-bar M15 swing high before the swept low and verify that it is a Lower High (LH) relative to the preceding confirmed swing high → Completed M15 candle BODY closes above that LH.
   - *Bearish CHoCH*: Established bullish structure → M15 liquidity sweep occurs → Identify the most recent confirmed 5-bar M15 swing low before the swept high and verify that it is a Higher Low (HL) relative to the preceding confirmed swing low → Completed M15 candle BODY closes below that HL.
   - *Selection Requirements*: CHoCH swing selection verifies the structural relationship (LH for Bullish, HL for Bearish) between the most recent confirmed 5-bar M15 swing before `sweepTime` and the preceding confirmed M15 swing. If the most recent swing is not an LH/HL or if structure cannot be established deterministically, the engine does not fall back to older swings; no CHoCH level is returned and the setup is safely invalidated. Unconfirmed swings (bar index < 3) and current forming candles (bar 0) are strictly excluded.
+  - *Source Limitation Note*: While the strategy source describes the CHoCH level as the swing directly preceding/originating the final leg into the swept extreme, exact algorithmic determination of "final-leg origin" beyond the confirmed 5-bar swing LH/HL relationship is not fully specified by the source material. The engine uses the deterministic LH/HL swing selection as the locked rule without inventing ungrounded scoring or ranking heuristics.
 
 ---
 
