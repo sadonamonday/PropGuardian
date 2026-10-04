@@ -10,7 +10,7 @@ The test suite verifies deterministic mathematical logic, swing definitions, 4H 
 ## 2. Test Execution Results
 
 ```
-Ran 35 tests in 0.002s
+Ran 63 tests in 0.003s
 
 OK
 ```
@@ -30,11 +30,13 @@ OK
 | **4H / POI** | `test_4h_poi_intersection` | PASS | Validates M15 candle range intersection with 4H POI bounds. |
 | **4H / POI** | `test_4h_poi_invalidation_ob_and_fvg` | PASS | Validates OB and FVG invalidation via 4H/completed candle closes beyond boundaries. |
 | **M15 Sweep** | `test_m15_sweep_detection` | PASS | Validates M15 liquidity sweep & close reclaim logic. |
-| **M15 CHoCH** | `test_m15_bullish_choch` | PASS | Confirms bullish CHoCH body close above LH. |
-| **M15 CHoCH** | `test_m15_bearish_choch` | PASS | Confirms bearish CHoCH body close below HL. |
-| **M15 CHoCH** | `test_m15_incorrect_swing_selection_rejection` | PASS | Confirms rejection of incorrect swing selection, requiring originating LH/HL. |
-| **M15 CHoCH** | `test_m15_body_close_requirement` | PASS | Confirms body-close requirement for CHoCH confirmation. |
-| **M15 CHoCH** | `test_m15_wick_only_break_rejected` | PASS | Rejects wick-only breaks for CHoCH. |
+| **M15 CHoCH** | `test_choch_test_a_valid_bullish_lh` | PASS | Validates selection of most recent confirmed M15 swing when it is a valid LH. |
+| **M15 CHoCH** | `test_choch_test_b_valid_bearish_hl` | PASS | Validates selection of most recent confirmed M15 swing when it is a valid HL. |
+| **M15 CHoCH** | `test_choch_test_c_most_recent_swing_not_lh` | PASS | Confirms rejection (returns None) when most recent high is not an LH, with no fallback to older high. |
+| **M15 CHoCH** | `test_choch_test_d_most_recent_swing_not_hl` | PASS | Confirms rejection (returns None) when most recent low is not an HL, with no fallback to older low. |
+| **M15 CHoCH** | `test_choch_test_e_unconfirmed_swing` | PASS | Confirms unconfirmed/forming swing cannot become CHoCH level. |
+| **M15 CHoCH** | `test_choch_test_f_wick_only_break` | PASS | Confirms wick-only break beyond CHoCH level does not confirm CHoCH. |
+| **M15 CHoCH** | `test_choch_test_g_ambiguous_structure` | PASS | Confirms ambiguous structure (insufficient swings) returns no CHoCH level. |
 | **M5 Execution**| `test_m5_confirmed_3bar_swing` | PASS | Validates strict 3-bar fractal high/low calculation on M5 timeframe. |
 | **M5 Execution**| `test_m5_bullish_displacement` | PASS | Validates bullish displacement proxy (directional M5 breakout candle + FVG). |
 | **M5 Execution**| `test_m5_bearish_displacement` | PASS | Validates bearish displacement proxy (directional M5 breakout candle + FVG). |
