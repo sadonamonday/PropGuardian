@@ -594,9 +594,13 @@ bool Find4HFVG(string symbol, int c3BarIndex, SMCPOI &outPOI)
 // Bearish OB: final bullish/up-close candle before qualifying bearish displacement/move.
 // Coherence Rules:
 // - The candidate OB candle must be followed by a qualifying directional displacement move
-//   originating after obBarIndex that produces structural confirmation (BOS) and an associated FVG.
-// - No arbitrary N-candle maximum distance, fixed pip/point displacement threshold, ATR limit, or
-//   mandatory immediate-next-candle color restriction is invented.
+//   originating after obBarIndex (c1 <= obBarIndex) that produces BOTH:
+//   1) a directional displacement candle (c2 Close > Open for bullish, Close < Open for bearish),
+//   2) an associated 3-candle FVG (Low(C3) > High(C1) for bullish, High(C3) < Low(C1) for bearish), AND
+//   3) a candle body-close BOS beyond the relevant prior 4H swing level.
+// - Note: The 50-bar lookback for prior swing detection is an engineering search limit for performance,
+//   not a strategy restriction. Intervening candles are allowed. No arbitrary N-candle confirmation limit,
+//   pip/point threshold, ATR limit, or minimum size threshold is introduced.
 // - Full High-Low OB boundaries, completed candles only, body-close BOS, wick-to-wick FVG, and
 //   OB invalidation on completed 4H candle close beyond the OB extreme are strictly preserved.
 bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
@@ -616,12 +620,13 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
    if(closeOB < openOB)
    {
       // 1. Find prior 4H swing high formed at or before obBarIndex for BOS confirmation
+      // (50 bars is an engineering search limit for performance, not a strategy rule)
       SMCSwing prevHigh;
       if(!FindMostRecentSwingHigh(symbol, SMC_4H_Timeframe, 50, prevHigh, obBarIndex + 1))
          return false;
 
-      // 2. Scan for a 3-candle move sequence originating at or after obBarIndex (c1 <= obBarIndex)
-      //    that produces BOTH an associated bullish FVG and a candle body-close BOS.
+      // 2. Search forward in chronological order after the OB (c1 <= obBarIndex)
+      //    for a 3-candle displacement sequence (c1, c2, c3) that produces BOTH an associated FVG and body-close BOS.
       bool hasQualifyingMove = false;
 
       for(int c1 = obBarIndex; c1 >= 3; c1--)
@@ -629,18 +634,23 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
          int c2 = c1 - 1;
          int c3 = c1 - 2;
 
+         double openC2 = iOpen(symbol, SMC_4H_Timeframe, c2);
+         double clC2   = iClose(symbol, SMC_4H_Timeframe, c2);
+         double clC3   = iClose(symbol, SMC_4H_Timeframe, c3);
+
          double highC1 = iHigh(symbol, SMC_4H_Timeframe, c1);
          double lowC3  = iLow(symbol, SMC_4H_Timeframe, c3);
 
-         if(highC1 > 0 && lowC3 > highC1) // Bullish FVG
+         // Displacement check: C2 must be a bullish directional displacement candle (Close > Open)
+         if(clC2 > openC2)
          {
-            double clC2 = iClose(symbol, SMC_4H_Timeframe, c2);
-            double clC3 = iClose(symbol, SMC_4H_Timeframe, c3);
-
-            if(clC2 > prevHigh.price || clC3 > prevHigh.price) // Bullish BOS associated with this move
+            if(highC1 > 0 && lowC3 > highC1) // Associated 3-candle Bullish FVG
             {
-               hasQualifyingMove = true;
-               break;
+               if(clC2 > prevHigh.price || clC3 > prevHigh.price) // Candle body-close BOS associated with this move
+               {
+                  hasQualifyingMove = true;
+                  break;
+               }
             }
          }
       }
@@ -670,12 +680,13 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
    else if(closeOB > openOB)
    {
       // 1. Find prior 4H swing low formed at or before obBarIndex for BOS confirmation
+      // (50 bars is an engineering search limit for performance, not a strategy rule)
       SMCSwing prevLow;
       if(!FindMostRecentSwingLow(symbol, SMC_4H_Timeframe, 50, prevLow, obBarIndex + 1))
          return false;
 
-      // 2. Scan for a 3-candle move sequence originating at or after obBarIndex (c1 <= obBarIndex)
-      //    that produces BOTH an associated bearish FVG and a candle body-close BOS.
+      // 2. Search forward in chronological order after the OB (c1 <= obBarIndex)
+      //    for a 3-candle displacement sequence (c1, c2, c3) that produces BOTH an associated FVG and body-close BOS.
       bool hasQualifyingMove = false;
 
       for(int c1 = obBarIndex; c1 >= 3; c1--)
@@ -683,18 +694,23 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
          int c2 = c1 - 1;
          int c3 = c1 - 2;
 
+         double openC2 = iOpen(symbol, SMC_4H_Timeframe, c2);
+         double clC2   = iClose(symbol, SMC_4H_Timeframe, c2);
+         double clC3   = iClose(symbol, SMC_4H_Timeframe, c3);
+
          double lowC1  = iLow(symbol, SMC_4H_Timeframe, c1);
          double highC3 = iHigh(symbol, SMC_4H_Timeframe, c3);
 
-         if(lowC1 > 0 && highC3 < lowC1) // Bearish FVG
+         // Displacement check: C2 must be a bearish directional displacement candle (Close < Open)
+         if(clC2 < openC2)
          {
-            double clC2 = iClose(symbol, SMC_4H_Timeframe, c2);
-            double clC3 = iClose(symbol, SMC_4H_Timeframe, c3);
-
-            if(clC2 < prevLow.price || clC3 < prevLow.price) // Bearish BOS associated with this move
+            if(lowC1 > 0 && highC3 < lowC1) // Associated 3-candle Bearish FVG
             {
-               hasQualifyingMove = true;
-               break;
+               if(clC2 < prevLow.price || clC3 < prevLow.price) // Candle body-close BOS associated with this move
+               {
+                  hasQualifyingMove = true;
+                  break;
+               }
             }
          }
       }

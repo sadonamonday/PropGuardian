@@ -21,7 +21,8 @@ class TestSMCEngineRules(unittest.TestCase):
     @staticmethod
     def _find_4h_order_block(bars, ob_idx, prev_swing_price):
         """
-        Helper replicating updated Find4HOrderBlock logic in smc_engine.mqh.
+        Helper simulation replicating updated Find4HOrderBlock logic in smc_engine.mqh.
+        Note: These Python tests are unit test helper simulations rather than direct execution/compilation of MQL5 code.
         bars: dict mapping barIndex (1, 2, ..., N) -> candle dict
         ob_idx: candidate Order Block bar index
         prev_swing_price: prior 4H swing high (for bullish) or swing low (for bearish) price
@@ -45,16 +46,19 @@ class TestSMCEngineRules(unittest.TestCase):
                 c3 = c1 - 2
 
                 if c1 in bars and c2 in bars and c3 in bars:
+                    open_c2 = bars[c2]['open']
+                    cl_c2   = bars[c2]['close']
+                    cl_c3   = bars[c3]['close']
+
                     high_c1 = bars[c1]['high']
                     low_c3  = bars[c3]['low']
 
-                    if high_c1 > 0 and low_c3 > high_c1: # Bullish FVG
-                        cl_c2 = bars[c2]['close']
-                        cl_c3 = bars[c3]['close']
-
-                        if cl_c2 > prev_swing_price or cl_c3 > prev_swing_price: # Bullish BOS
-                            has_qualifying_move = True
-                            break
+                    # Displacement check: c2 must be directional displacement candle (Close > Open)
+                    if cl_c2 > open_c2:
+                        if high_c1 > 0 and low_c3 > high_c1: # Associated Bullish FVG
+                            if cl_c2 > prev_swing_price or cl_c3 > prev_swing_price: # Bullish BOS
+                                has_qualifying_move = True
+                                break
 
             if not has_qualifying_move:
                 return False, None
@@ -81,16 +85,19 @@ class TestSMCEngineRules(unittest.TestCase):
                 c3 = c1 - 2
 
                 if c1 in bars and c2 in bars and c3 in bars:
+                    open_c2 = bars[c2]['open']
+                    cl_c2   = bars[c2]['close']
+                    cl_c3   = bars[c3]['close']
+
                     low_c1  = bars[c1]['low']
                     high_c3 = bars[c3]['high']
 
-                    if low_c1 > 0 and high_c3 < low_c1: # Bearish FVG
-                        cl_c2 = bars[c2]['close']
-                        cl_c3 = bars[c3]['close']
-
-                        if cl_c2 < prev_swing_price or cl_c3 < prev_swing_price: # Bearish BOS
-                            has_qualifying_move = True
-                            break
+                    # Displacement check: c2 must be directional displacement candle (Close < Open)
+                    if cl_c2 < open_c2:
+                        if low_c1 > 0 and high_c3 < low_c1: # Associated Bearish FVG
+                            if cl_c2 < prev_swing_price or cl_c3 < prev_swing_price: # Bearish BOS
+                                has_qualifying_move = True
+                                break
 
             if not has_qualifying_move:
                 return False, None
@@ -274,6 +281,21 @@ class TestSMCEngineRules(unittest.TestCase):
         valid, ob = self._find_4h_order_block(bars, 4, prev_swing_high)
         self.assertTrue(valid, "Valid FVG and BOS without arbitrary size thresholds must be accepted")
         self.assertEqual(ob['type'], 'DEMAND')
+
+    def test_ob_11_non_directional_c2_displacement_rejected(self):
+        # OB-11: C2 must be a directional displacement candle (Close > Open for bullish)
+        # If C2 is a down-close candle (open=1.1040, close=1.1035) even if c3 closes above swing high and FVG is formed, move is rejected.
+        bars = {
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB
+            3: {'open': 1.1040, 'close': 1.1035, 'high': 1.1045, 'low': 1.1000},             # c2=3 (open 1.1040 > close 1.1035: NOT bullish displacement!)
+            2: {'open': 1.1035, 'close': 1.1050, 'high': 1.1055, 'low': 1.1028},             # c3=2 (BOS & Low(2)=1.1028 > High(4)=1.1025 FVG)
+            1: {'open': 1.1048, 'close': 1.1060, 'high': 1.1065, 'low': 1.1045}
+        }
+        prev_swing_high = 1.1040
+
+        valid, ob = self._find_4h_order_block(bars, 4, prev_swing_high)
+        self.assertFalse(valid, "Non-directional displacement candle C2 must reject candidate OB")
+        self.assertIsNone(ob)
 
     def test_4h_bullish_fvg(self):
         # Bullish FVG: Low(C3) > High(C1)
