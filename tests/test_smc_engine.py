@@ -38,29 +38,25 @@ class TestSMCEngineRules(unittest.TestCase):
 
         # Bullish OB: final down-close candle before qualifying bullish move
         if close_ob < open_ob:
-            has_bos = False
-            has_fvg = False
+            has_qualifying_move = False
 
-            for k in range(ob_idx - 1, 0, -1):
-                if k not in bars:
-                    break
-                cl_k = bars[k]['close']
+            for c1 in range(ob_idx, 2, -1):
+                c2 = c1 - 1
+                c3 = c1 - 2
 
-                if cl_k > prev_swing_price:
-                    has_bos = True
-
-                c1 = k + 2
-                c3 = k
-                if c1 <= ob_idx and c1 in bars and c3 in bars:
+                if c1 in bars and c2 in bars and c3 in bars:
                     high_c1 = bars[c1]['high']
-                    low_c3 = bars[c3]['low']
-                    if high_c1 > 0 and low_c3 > high_c1:
-                        has_fvg = True
+                    low_c3  = bars[c3]['low']
 
-                if has_bos and has_fvg:
-                    break
+                    if high_c1 > 0 and low_c3 > high_c1: # Bullish FVG
+                        cl_c2 = bars[c2]['close']
+                        cl_c3 = bars[c3]['close']
 
-            if not has_bos or not has_fvg:
+                        if cl_c2 > prev_swing_price or cl_c3 > prev_swing_price: # Bullish BOS
+                            has_qualifying_move = True
+                            break
+
+            if not has_qualifying_move:
                 return False, None
 
             # Invalidation check: completed candle closes below bottom
@@ -78,29 +74,25 @@ class TestSMCEngineRules(unittest.TestCase):
 
         # Bearish OB: final up-close candle before qualifying bearish move
         elif close_ob > open_ob:
-            has_bos = False
-            has_fvg = False
+            has_qualifying_move = False
 
-            for k in range(ob_idx - 1, 0, -1):
-                if k not in bars:
-                    break
-                cl_k = bars[k]['close']
+            for c1 in range(ob_idx, 2, -1):
+                c2 = c1 - 1
+                c3 = c1 - 2
 
-                if cl_k < prev_swing_price:
-                    has_bos = True
-
-                c1 = k + 2
-                c3 = k
-                if c1 <= ob_idx and c1 in bars and c3 in bars:
-                    low_c1 = bars[c1]['low']
+                if c1 in bars and c2 in bars and c3 in bars:
+                    low_c1  = bars[c1]['low']
                     high_c3 = bars[c3]['high']
-                    if low_c1 > 0 and high_c3 < low_c1:
-                        has_fvg = True
 
-                if has_bos and has_fvg:
-                    break
+                    if low_c1 > 0 and high_c3 < low_c1: # Bearish FVG
+                        cl_c2 = bars[c2]['close']
+                        cl_c3 = bars[c3]['close']
 
-            if not has_bos or not has_fvg:
+                        if cl_c2 < prev_swing_price or cl_c3 < prev_swing_price: # Bearish BOS
+                            has_qualifying_move = True
+                            break
+
+            if not has_qualifying_move:
                 return False, None
 
             # Invalidation check: completed candle closes above top
@@ -120,12 +112,12 @@ class TestSMCEngineRules(unittest.TestCase):
 
     def test_ob_1_valid_bullish(self):
         # OB-1: Valid bullish OB
-        # Bearish candidate candle, later bullish directional move, bullish BOS, associated bullish FVG, OB accepted
+        # Bearish OB candle -> bullish move producing associated FVG & body-close BOS -> valid OB
         bars = {
-            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Bearish candidate OB (bar 4)
-            3: {'open': 1.1005, 'close': 1.1035, 'high': 1.1040, 'low': 1.1000},             # Bullish move
-            2: {'open': 1.1030, 'close': 1.1050, 'high': 1.1055, 'low': 1.1028},             # Bullish move & BOS (close 1.1050 > 1.1040)
-            1: {'open': 1.1048, 'close': 1.1060, 'high': 1.1065, 'low': 1.1042}              # FVG: Low(1)=1.1042 > High(3)=1.1040
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB (c1=4)
+            3: {'open': 1.1005, 'close': 1.1035, 'high': 1.1040, 'low': 1.1000},             # c2=3 (close 1.1035 <= 1.1040)
+            2: {'open': 1.1030, 'close': 1.1050, 'high': 1.1055, 'low': 1.1042},             # c3=2 (close 1.1050 > 1.1040 -> BOS, Low(2)=1.1042 > High(4)=1.1025 -> FVG)
+            1: {'open': 1.1048, 'close': 1.1060, 'high': 1.1065, 'low': 1.1045}
         }
         prev_swing_high = 1.1040
 
@@ -136,12 +128,12 @@ class TestSMCEngineRules(unittest.TestCase):
 
     def test_ob_2_valid_bearish(self):
         # OB-2: Valid bearish OB
-        # Bullish candidate candle, later bearish directional move, bearish BOS, associated bearish FVG, OB accepted
+        # Bullish OB candle -> bearish move producing associated FVG & body-close BOS -> valid OB
         bars = {
-            4: {'open': 1.1000, 'close': 1.1020, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Bullish candidate OB (bar 4)
-            3: {'open': 1.1015, 'close': 1.0990, 'high': 1.1018, 'low': 1.0985},             # Bearish move
-            2: {'open': 1.0985, 'close': 1.0960, 'high': 1.0990, 'low': 1.0955},             # Bearish move & BOS (close 1.0960 < 1.0970)
-            1: {'open': 1.0965, 'close': 1.0950, 'high': 1.0980, 'low': 1.0945}              # FVG: High(1)=1.0980 < Low(3)=1.0985
+            4: {'open': 1.1000, 'close': 1.1020, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB (c1=4)
+            3: {'open': 1.1015, 'close': 1.0990, 'high': 1.1018, 'low': 1.0985},             # c2=3
+            2: {'open': 1.0985, 'close': 1.0960, 'high': 1.0980, 'low': 1.0955},             # c3=2 (close 1.0960 < 1.0970 -> BOS, High(2)=1.0980 < Low(4)=1.0995 -> FVG)
+            1: {'open': 1.0965, 'close': 1.0950, 'high': 1.0970, 'low': 1.0945}
         }
         prev_swing_low = 1.0970
 
@@ -150,43 +142,84 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertEqual(ob['type'], 'SUPPLY')
         self.assertEqual((ob['bottom'], ob['top']), (1.0995, 1.1025))
 
-    def test_ob_3_no_structural_confirmation_rejected(self):
-        # OB-3: No structural confirmation
-        # Candidate candle exists, FVG exists, no qualifying BOS -> OB rejected
+    def test_ob_3_no_bos_rejected(self):
+        # OB-3: No BOS -> reject OB
+        # FVG exists in move (c1=4, c2=3, c3=2, Low(2)=1.1028 > High(4)=1.1025), but close of c2/c3 <= 1.1060 (No BOS)
         bars = {
-            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Bearish candidate OB
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB
             3: {'open': 1.1005, 'close': 1.1020, 'high': 1.1022, 'low': 1.1000},
-            2: {'open': 1.1020, 'close': 1.1030, 'high': 1.1032, 'low': 1.1018},             # Close 1.1030 <= prev_swing_high 1.1060 (No BOS!)
-            1: {'open': 1.1030, 'close': 1.1035, 'high': 1.1038, 'low': 1.1028}              # FVG exists (Low(1)=1.1028 > High(3)=1.1022)
+            2: {'open': 1.1020, 'close': 1.1030, 'high': 1.1032, 'low': 1.1028},             # Close 1.1030 <= prev_swing_high 1.1060
+            1: {'open': 1.1030, 'close': 1.1035, 'high': 1.1038, 'low': 1.1028}
         }
         prev_swing_high = 1.1060
 
         valid, ob = self._find_4h_order_block(bars, 4, prev_swing_high)
-        self.assertFalse(valid, "OB without qualifying BOS must be rejected")
+        self.assertFalse(valid, "OB without qualifying BOS in move must be rejected")
         self.assertIsNone(ob)
 
-    def test_ob_4_no_fvg_context_rejected(self):
-        # OB-4: No FVG context
-        # Candidate candle exists, BOS exists, no qualifying FVG -> OB rejected
+    def test_ob_4_no_fvg_rejected(self):
+        # OB-4: No associated FVG -> reject OB
+        # BOS exists (c3 close 1.1050 > 1.1040), but Low(2)=1.1020 <= High(4)=1.1025 (No FVG!)
         bars = {
-            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Bearish candidate OB
-            3: {'open': 1.1005, 'close': 1.1035, 'high': 1.1040, 'low': 1.1000},
-            2: {'open': 1.1030, 'close': 1.1050, 'high': 1.1055, 'low': 1.1020},             # BOS exists (close 1.1050 > 1.1040)
-            1: {'open': 1.1048, 'close': 1.1052, 'high': 1.1058, 'low': 1.1030}              # Low(1)=1.1030 <= High(3)=1.1040 (No FVG!)
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB
+            3: {'open': 1.1005, 'close': 1.1035, 'high': 1.1040, 'low': 1.1000},             # c2=3
+            2: {'open': 1.1030, 'close': 1.1050, 'high': 1.1055, 'low': 1.1020},             # c3=2
+            1: {'open': 1.1048, 'close': 1.1052, 'high': 1.1058, 'low': 1.1030}
         }
         prev_swing_high = 1.1040
 
         valid, ob = self._find_4h_order_block(bars, 4, prev_swing_high)
-        self.assertFalse(valid, "OB without qualifying FVG must be rejected")
+        self.assertFalse(valid, "OB without associated FVG in move must be rejected")
         self.assertIsNone(ob)
 
-    def test_ob_5_invalidated_ob_rejected(self):
-        # OB-5: Invalidated OB
-        # Otherwise valid OB, completed candle closes beyond OB extreme -> OB rejected
+    def test_ob_5_unrelated_separate_bos_fvg_moves_rejected(self):
+        # OB-5: BOS and FVG exist but are unrelated/separate moves -> reject OB
+        # Bar 8 = candidate OB
+        # Sequence 8-7-6 (c1=8, c2=7, c3=6): creates FVG (Low(6)=1.1030 > High(8)=1.1025), but close(7)=1.1010 and close(6)=1.1020 <= prev_swing_high(1.1050) -> FVG without BOS!
+        # Sequence 4-3-2 (c1=4, c2=3, c3=2): creates BOS (close(3)=1.1060 > 1.1050), but Low(2)=1.1030 <= High(4)=1.1040 -> BOS without FVG!
+        # Result: FVG and BOS are in separate move sequences -> reject OB!
         bars = {
-            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Down-close OB (low 1.0995)
-            3: {'open': 1.1005, 'close': 1.1050, 'high': 1.1055, 'low': 1.1000},             # Move & BOS & FVG
-            2: {'open': 1.1045, 'close': 1.1060, 'high': 1.1065, 'low': 1.1030},
+            8: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Candidate OB
+            7: {'open': 1.1005, 'close': 1.1010, 'high': 1.1012, 'low': 1.1000},
+            6: {'open': 1.1012, 'close': 1.1020, 'high': 1.1035, 'low': 1.1030},             # FVG (Low(6)=1.1030 > High(8)=1.1025), no BOS
+            5: {'open': 1.1020, 'close': 1.1015, 'high': 1.1035, 'low': 1.1010},
+            4: {'open': 1.1015, 'close': 1.1035, 'high': 1.1040, 'low': 1.1010},
+            3: {'open': 1.1035, 'close': 1.1060, 'high': 1.1065, 'low': 1.1030},             # BOS (close(3)=1.1060 > 1.1050), no FVG (Low(2) 1.1030 <= High(4) 1.1040)
+            2: {'open': 1.1060, 'close': 1.1055, 'high': 1.1062, 'low': 1.1030},
+            1: {'open': 1.1055, 'close': 1.1065, 'high': 1.1070, 'low': 1.1050}
+        }
+        prev_swing_high = 1.1050
+
+        valid, ob = self._find_4h_order_block(bars, 8, prev_swing_high)
+        self.assertFalse(valid, "OB with separate/unrelated FVG and BOS moves must be rejected")
+        self.assertIsNone(ob)
+
+    def test_ob_6_intervening_candles_permitted(self):
+        # OB-6: Intervening candle(s) do not automatically invalidate an otherwise valid OB
+        # Candidate OB is at bar 6.
+        # Move sequence 4-3-2 (c1=4, c2=3, c3=2): Low(2)=1.1030 > High(4)=1.1025 (FVG) and close(3)=1.1050 > 1.1040 (BOS).
+        # c1=4 is after OB(6), with bar 5 being an intervening candle. OB is accepted.
+        bars = {
+            6: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Candidate OB
+            5: {'open': 1.1005, 'close': 1.1002, 'high': 1.1010, 'low': 1.0998},             # Intervening small candle
+            4: {'open': 1.1002, 'close': 1.1020, 'high': 1.1025, 'low': 1.1000},             # Move start (c1=4)
+            3: {'open': 1.1020, 'close': 1.1050, 'high': 1.1055, 'low': 1.1018},             # Move (c2=3, BOS)
+            2: {'open': 1.1050, 'close': 1.1060, 'high': 1.1065, 'low': 1.1030},             # Move (c3=2, FVG with c1)
+            1: {'open': 1.1060, 'close': 1.1065, 'high': 1.1070, 'low': 1.1055}
+        }
+        prev_swing_high = 1.1040
+
+        valid, ob = self._find_4h_order_block(bars, 6, prev_swing_high)
+        self.assertTrue(valid, "OB with intervening candle before qualifying move sequence must be accepted")
+        self.assertEqual(ob['type'], 'DEMAND')
+
+    def test_ob_7_invalidated_ob_rejected(self):
+        # OB-7: Invalidated OB -> reject
+        # Valid move sequence (c1=4, c2=3, c3=2), but later completed candle (bar 1) closes below OB low (1.0990 < 1.0995)
+        bars = {
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB (low 1.0995)
+            3: {'open': 1.1005, 'close': 1.1050, 'high': 1.1055, 'low': 1.1000},             # c2=3 (BOS)
+            2: {'open': 1.1045, 'close': 1.1060, 'high': 1.1065, 'low': 1.1030},             # c3=2 (FVG)
             1: {'open': 1.1030, 'close': 1.0990, 'high': 1.1035, 'low': 1.0985}              # Close 1.0990 < OB low 1.0995 (Invalidated!)
         }
         prev_swing_high = 1.1040
@@ -195,45 +228,52 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertFalse(valid, "OB closed beyond its extreme must be rejected as invalidated")
         self.assertIsNone(ob)
 
-    def test_ob_6_no_arbitrary_immediate_next_candle_requirement(self):
-        # OB-6: No arbitrary immediate-next-candle requirement
-        # Qualifying move is not simply the immediately following candle; verify OB is accepted
+    def test_ob_8_bos_requires_body_close_not_wick(self):
+        # OB-8: BOS must be confirmed by candle BODY close, not wick-only break
+        # c2 high wicks to 1.1045 (> 1.1040), c3 high wicks to 1.1050 (> 1.1040),
+        # but c2 close = 1.1035 and c3 close = 1.1038 (both <= 1.1040 prev_swing_high).
+        # FVG exists (Low(2)=1.1028 > High(4)=1.1025). -> Rejected because no body close BOS!
         bars = {
-            5: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB
-            4: {'open': 1.1005, 'close': 1.1020, 'high': 1.1022, 'low': 1.1002},             # Bullish move candle 1
-            3: {'open': 1.1020, 'close': 1.1035, 'high': 1.1035, 'low': 1.1015},             # Bullish move candle 2
-            2: {'open': 1.1035, 'close': 1.1050, 'high': 1.1055, 'low': 1.1030},             # Bullish move candle 3 (BOS)
-            1: {'open': 1.1048, 'close': 1.1060, 'high': 1.1065, 'low': 1.1040}              # Low(1) 1.1040 > High(3) 1.1035 -> FVG!
-        }
-        prev_swing_high = 1.1045
-
-        valid, ob = self._find_4h_order_block(bars, 5, prev_swing_high)
-        self.assertTrue(valid, "OB with delayed multi-candle qualifying move must be accepted")
-        self.assertEqual(ob['type'], 'DEMAND')
-
-    def test_ob_7_intervening_candle(self):
-        # OB-7: Intervening candle
-        # Verify an intervening candle of opposite color does not automatically invalidate the OB unless actual source qualification fails
-        # Bar 6 = down-close OB candidate
-        # Bar 5 = down-close candle (final down-close before move)
-        # Bar 4 = bullish move
-        # Bar 3 = bullish move (BOS)
-        # Bar 2 = bullish move
-        # Bar 1 = bullish move (completes FVG with C3)
-        bars = {
-            6: {'open': 1.1040, 'close': 1.1020, 'high': 1.1045, 'low': 1.1015, 'time': 80},  # Older down-close
-            5: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # Final down-close OB
-            4: {'open': 1.1005, 'close': 1.1025, 'high': 1.1030, 'low': 1.1000},             # Bullish
-            3: {'open': 1.1025, 'close': 1.1050, 'high': 1.1055, 'low': 1.1020},             # Bullish (BOS)
-            2: {'open': 1.1050, 'close': 1.1060, 'high': 1.1065, 'low': 1.1045},             # Bullish
-            1: {'open': 1.1060, 'close': 1.1070, 'high': 1.1075, 'low': 1.1060}              # FVG with C3
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB
+            3: {'open': 1.1005, 'close': 1.1035, 'high': 1.1045, 'low': 1.1000},             # Wick > 1.1040, close <= 1.1040
+            2: {'open': 1.1035, 'close': 1.1038, 'high': 1.1050, 'low': 1.1028},             # Wick > 1.1040, close <= 1.1040, FVG
+            1: {'open': 1.1038, 'close': 1.1039, 'high': 1.1042, 'low': 1.1030}
         }
         prev_swing_high = 1.1040
 
-        # Bar 5 is the final down-close before the qualifying move -> valid OB
-        valid_bar5, ob_bar5 = self._find_4h_order_block(bars, 5, prev_swing_high)
-        self.assertTrue(valid_bar5)
-        self.assertEqual(ob_bar5['type'], 'DEMAND')
+        valid, ob = self._find_4h_order_block(bars, 4, prev_swing_high)
+        self.assertFalse(valid, "Wick-only break of prev swing high without body close must NOT confirm BOS")
+        self.assertIsNone(ob)
+
+    def test_ob_9_fvg_3_candle_wick_relationship(self):
+        # OB-9: FVG must use correct 3-candle wick relationship (Low(C3) > High(C1) for bullish, High(C3) < Low(C1) for bearish)
+        # Sequence 4-3-2: c1=4, c2=3, c3=2. Low(2)=1.1020 <= High(4)=1.1025 -> No FVG despite huge body move and BOS.
+        bars = {
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB
+            3: {'open': 1.1005, 'close': 1.1050, 'high': 1.1055, 'low': 1.1000},             # BOS
+            2: {'open': 1.1050, 'close': 1.1060, 'high': 1.1065, 'low': 1.1020},             # Low(2) 1.1020 <= High(4) 1.1025 -> FVG fails wick check!
+            1: {'open': 1.1060, 'close': 1.1065, 'high': 1.1070, 'low': 1.1050}
+        }
+        prev_swing_high = 1.1040
+
+        valid, ob = self._find_4h_order_block(bars, 4, prev_swing_high)
+        self.assertFalse(valid, "FVG failing wick-to-wick gap condition must be rejected")
+        self.assertIsNone(ob)
+
+    def test_ob_10_no_arbitrary_min_fvg_size_or_displacement_threshold(self):
+        # OB-10: No arbitrary minimum FVG size or numeric displacement threshold required
+        # Low(2)=1.102501 > High(4)=1.102500 (tiny 0.1 pip FVG), body close 1.104001 > 1.104000 (tiny BOS)
+        bars = {
+            4: {'open': 1.1020, 'close': 1.1000, 'high': 1.102500, 'low': 1.0995, 'time': 100},
+            3: {'open': 1.1005, 'close': 1.1035, 'high': 1.1038, 'low': 1.1000},
+            2: {'open': 1.1035, 'close': 1.104001, 'high': 1.1042, 'low': 1.102501},
+            1: {'open': 1.1040, 'close': 1.1045, 'high': 1.1048, 'low': 1.1038}
+        }
+        prev_swing_high = 1.104000
+
+        valid, ob = self._find_4h_order_block(bars, 4, prev_swing_high)
+        self.assertTrue(valid, "Valid FVG and BOS without arbitrary size thresholds must be accepted")
+        self.assertEqual(ob['type'], 'DEMAND')
 
     def test_4h_bullish_fvg(self):
         # Bullish FVG: Low(C3) > High(C1)

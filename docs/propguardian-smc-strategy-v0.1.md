@@ -33,9 +33,10 @@ PropGuardian SMC Strategy v0.1 implements a deterministic multi-timeframe Smart 
   - *Bearish OB*: Invalidated when a completed 4H candle closes above the OB high.
   - *FVG*: Invalidated when a completed candle closes through the C1 boundary (`close < fvg.bottom` for bullish, `close > fvg.top` for bearish).
 - **4H Order Block Definition**:
-  - *Bullish OB*: The final bearish/down-close candle before the qualifying bullish displacement/move (producing 4H BOS and an associated 4H FVG).
-  - *Bearish OB*: The final bullish/up-close candle before the qualifying bearish displacement/move (producing 4H BOS and an associated 4H FVG).
-  - *OB Qualification*: OB selection establishes internal coherence between the candidate OB candle, the qualifying directional move originating after the OB bar, 4H BOS, and an associated 4H FVG. No arbitrary N-candle maximum distance, fixed pip/point displacement threshold, ATR limit, or mandatory immediate-next-candle color restriction is invented. Full High-Low OB boundaries, completed candles only, body-close BOS, wick-to-wick FVG, and OB invalidation on completed 4H candle close beyond the OB extreme are strictly maintained.
+  - *Bullish OB*: The final bearish/down-close candle before the qualifying bullish displacement/move (producing 4H BOS and an associated 4H FVG within the same move sequence).
+  - *Bearish OB*: The final bullish/up-close candle before the qualifying bearish displacement/move (producing 4H BOS and an associated 4H FVG within the same move sequence).
+  - *OB Qualification*: Candidate OB qualification establishes internal coherence between the candidate OB candle and a qualifying directional move originating after the OB bar (`c1 <= obBarIndex`). The 3-candle move sequence starting at `c1` must produce BOTH an associated 4H FVG (`Low(c3) > High(c1)` for bullish, `High(c3) < Low(c1)` for bearish) and a 4H BOS confirmed by candle body close (`close(c2)` or `close(c3)` beyond prior 4H swing extreme).
+  - *Absence of Arbitrary Thresholds*: No arbitrary N-candle maximum distance, fixed pip/point displacement threshold, ATR limit, minimum FVG size, or mandatory immediate-next-candle color restriction is introduced. Fixed engineering search loop limits (e.g. 50 bars for 4H POI/swings, 40 bars for M15 sweeps, 30 bars for M5 swings, 200 bars for opposing TP targets) serve solely as implementation processing bounds rather than strategy rules. Full High-Low OB boundaries, completed candles only, body-close BOS, wick-to-wick FVG, and OB invalidation on completed 4H candle close beyond the OB extreme are strictly maintained.
 
 ---
 

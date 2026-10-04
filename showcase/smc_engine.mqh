@@ -620,36 +620,32 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
       if(!FindMostRecentSwingHigh(symbol, SMC_4H_Timeframe, 50, prevHigh, obBarIndex + 1))
          return false;
 
-      // 2. Scan the directional displacement move following obBarIndex (from obBarIndex - 1 down to 1) for:
-      //    - Qualifying BOS: a candle body close above prevHigh.price
-      //    - Associated bullish FVG: a 3-candle sequence (c1, c2, c3) where Low(c3) > High(c1) and c1 <= obBarIndex
-      bool hasBOS = false;
-      bool hasFVG = false;
+      // 2. Scan for a 3-candle move sequence originating at or after obBarIndex (c1 <= obBarIndex)
+      //    that produces BOTH an associated bullish FVG and a candle body-close BOS.
+      bool hasQualifyingMove = false;
 
-      for(int k = obBarIndex - 1; k >= 1; k--)
+      for(int c1 = obBarIndex; c1 >= 3; c1--)
       {
-         double clK = iClose(symbol, SMC_4H_Timeframe, k);
+         int c2 = c1 - 1;
+         int c3 = c1 - 2;
 
-         // Check BOS
-         if(clK > prevHigh.price)
-            hasBOS = true;
+         double highC1 = iHigh(symbol, SMC_4H_Timeframe, c1);
+         double lowC3  = iLow(symbol, SMC_4H_Timeframe, c3);
 
-         // Check FVG with c1 at or after obBarIndex (i.e. c1 <= obBarIndex) and c3 = k
-         int c1 = k + 2;
-         int c3 = k;
-         if(c1 <= obBarIndex && c3 >= 1)
+         if(highC1 > 0 && lowC3 > highC1) // Bullish FVG
          {
-            double highC1 = iHigh(symbol, SMC_4H_Timeframe, c1);
-            double lowC3  = iLow(symbol, SMC_4H_Timeframe, c3);
-            if(highC1 > 0 && lowC3 > highC1)
-               hasFVG = true;
-         }
+            double clC2 = iClose(symbol, SMC_4H_Timeframe, c2);
+            double clC3 = iClose(symbol, SMC_4H_Timeframe, c3);
 
-         if(hasBOS && hasFVG)
-            break;
+            if(clC2 > prevHigh.price || clC3 > prevHigh.price) // Bullish BOS associated with this move
+            {
+               hasQualifyingMove = true;
+               break;
+            }
+         }
       }
 
-      if(!hasBOS || !hasFVG) return false;
+      if(!hasQualifyingMove) return false;
 
       outPOI.type      = POI_TYPE_DEMAND;
       outPOI.bottom    = lowOB;
@@ -678,36 +674,32 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
       if(!FindMostRecentSwingLow(symbol, SMC_4H_Timeframe, 50, prevLow, obBarIndex + 1))
          return false;
 
-      // 2. Scan the directional displacement move following obBarIndex (from obBarIndex - 1 down to 1) for:
-      //    - Qualifying BOS: a candle body close below prevLow.price
-      //    - Associated bearish FVG: a 3-candle sequence (c1, c2, c3) where High(c3) < Low(c1) and c1 <= obBarIndex
-      bool hasBOS = false;
-      bool hasFVG = false;
+      // 2. Scan for a 3-candle move sequence originating at or after obBarIndex (c1 <= obBarIndex)
+      //    that produces BOTH an associated bearish FVG and a candle body-close BOS.
+      bool hasQualifyingMove = false;
 
-      for(int k = obBarIndex - 1; k >= 1; k--)
+      for(int c1 = obBarIndex; c1 >= 3; c1--)
       {
-         double clK = iClose(symbol, SMC_4H_Timeframe, k);
+         int c2 = c1 - 1;
+         int c3 = c1 - 2;
 
-         // Check BOS
-         if(clK < prevLow.price)
-            hasBOS = true;
+         double lowC1  = iLow(symbol, SMC_4H_Timeframe, c1);
+         double highC3 = iHigh(symbol, SMC_4H_Timeframe, c3);
 
-         // Check FVG with c1 at or after obBarIndex (i.e. c1 <= obBarIndex) and c3 = k
-         int c1 = k + 2;
-         int c3 = k;
-         if(c1 <= obBarIndex && c3 >= 1)
+         if(lowC1 > 0 && highC3 < lowC1) // Bearish FVG
          {
-            double lowC1  = iLow(symbol, SMC_4H_Timeframe, c1);
-            double highC3 = iHigh(symbol, SMC_4H_Timeframe, c3);
-            if(lowC1 > 0 && highC3 < lowC1)
-               hasFVG = true;
-         }
+            double clC2 = iClose(symbol, SMC_4H_Timeframe, c2);
+            double clC3 = iClose(symbol, SMC_4H_Timeframe, c3);
 
-         if(hasBOS && hasFVG)
-            break;
+            if(clC2 < prevLow.price || clC3 < prevLow.price) // Bearish BOS associated with this move
+            {
+               hasQualifyingMove = true;
+               break;
+            }
+         }
       }
 
-      if(!hasBOS || !hasFVG) return false;
+      if(!hasQualifyingMove) return false;
 
       outPOI.type      = POI_TYPE_SUPPLY;
       outPOI.bottom    = lowOB;
