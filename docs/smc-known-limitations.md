@@ -12,16 +12,17 @@ This document outlines the source ambiguities, engineering decisions, and enviro
    - *Engineering Solution*: Implemented as `"Structural displacement proxy: directional M5 breakout candle + qualifying FVG."`
    - *Behavior*: Enforces that M5 structural breakout candle must close beyond the M5 swing level AND be directionally matching (`Close > Open` for Buy, `Close < Open` for Sell) while producing a valid 3-candle Fair Value Gap (`Low(C3) > High(C1)` for Buy, `High(C3) < Low(C1)` for Sell).
 
-2. **4H POI Detection & Provider Interface**:
+2. **4H POI Detection & Qualification**:
    - *Requirement*: Valid 4H POI is either confirmed OB or FVG (equal status). Must agree with 4H structural direction.
    - *Engineering Solution*: Implemented scanning across 4H candles for confirmed 4H OB and 4H FVG matching 4H trend direction, plus an explicit POI registry interface (`Register4HPOI` / `GetActive4HPOI`).
-   - *4H OB Sequence Rule*: Candidate 4H OB is the final opposite-direction candle before a qualifying displacement move that produces 4H BOS and an associated 4H FVG. Unsupported assumptions (such as requiring an immediately adjacent candle state or rejecting OBs due to intervening opposite-colored candles during the displacement move) are omitted.
+   - *4H OB Sequence Rule*: Candidate 4H OB is the final opposite-direction candle before a qualifying displacement move that produces 4H BOS and an associated 4H FVG. Obeying source constraints, unsupported assumptions (such as requiring an immediately adjacent candle state or rejecting OBs due to intervening opposite-colored candles during the displacement move) are omitted.
    - *Source Ambiguity Limitation*: Where the source material does not define a maximum candle count between the OB and qualifying BOS/FVG or a numerical threshold for internal consolidation during a multi-candle move, no arbitrary candle limits or thresholds are invented. The OB remains tied to the qualifying structural move originating after the candidate OB bar.
    - *Behavior*: If no valid 4H POI is detected or explicitly registered, `GetActive4HPOI()` returns `false`, resulting in `NO TRADE` rather than inventing a proprietary scoring or ranking system.
 
-3. **M15 CHoCH Swing Selection**:
+3. **M15 CHoCH Swing Selection & Final-Leg Origin Limitation**:
    - *Requirement*: CHoCH swing must be the confirmed M15 swing (LH for Bullish, HL for Bearish) directly originating the final leg into the swept extreme.
    - *Engineering Solution*: Implemented `FindCHoCHLevel` finding the most recent confirmed 5-bar M15 swing before `sweepTime` and verifying its structural relationship (Lower High relative to preceding swing for Bullish, Higher Low relative to preceding swing for Bearish).
+   - *Exact Final-Leg Origin Limitation*: The strategy source specifies that the LH/HL should be the swing directly preceding/originating the final leg into the swept extreme. However, the available source rules do not algorithmically define "final-leg origin" beyond the confirmed 5-bar swing LH/HL relationship. The current deterministic LH/HL implementation is kept without pretending a source rule exists where it does not.
    - *Deterministic Fallback Limitation*: If the most recent confirmed swing is not a valid LH or HL, or if insufficient confirmed structure exists to establish the relationship, the engine does not fall back to older swings merely because they exist; `FindCHoCHLevel()` returns `false` and the setup is safely invalidated (`NO TRADE`).
 
 3. **Take Profit Target Calculation**:

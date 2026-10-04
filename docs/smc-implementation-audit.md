@@ -44,7 +44,8 @@ The following fixes were made in this iteration:
    - POI invalidation enforced (OB: 4H close beyond OB extreme; FVG: completed candle close through C1 boundary).
 
 2. **M15 CHoCH Selection Logic**:
-   - Refined `FindCHoCHLevel()` to traverse backward from sweep time and select the confirmed M15 swing (LH for Buy, HL for Sell) directly originating the final leg into the sweep extreme.
+   - Refined `FindCHoCHLevel()` to traverse backward from sweep time and select the confirmed M15 swing (LH for Buy, HL for Sell) directly preceding the sweep extreme, confirming its LH/HL relationship against the prior confirmed swing.
+   - Audited the "final-leg origin" source limitation and documented that exact final-leg-origin selection is maintained via the deterministic LH/HL rule without inventing ungrounded scoring systems.
    - Enforced M15 candle BODY close requirement; wick-only breaks remain sweeps.
 
 3. **M5 Execution & Displacement-Tied FVG**:
