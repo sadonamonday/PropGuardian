@@ -861,6 +861,21 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
 
    if(!IsPriceIn4HPOI(symbol, poi)) return false;
 
+   // Check if this exact sweep on this POI was already processed and invalidated in history for this symbol
+   datetime m15Bar1Time = iTime(symbol, SMC_M15_Timeframe, 1);
+
+   for(int s = 0; s < ArraySize(g_SMCSetups); s++)
+   {
+      if(g_SMCSetups[s].symbol == symbol && g_SMCSetups[s].state == SMC_INVALIDATED)
+      {
+         if(g_SMCSetups[s].poi4H.time == poi.time && g_SMCSetups[s].sweepTime == m15Bar1Time)
+         {
+            // Already processed and invalidated sweep for this POI and candle
+            return false;
+         }
+      }
+   }
+
    if(direction == SIGNAL_BUY && poi.type == POI_TYPE_DEMAND)
    {
       SMCSwing m15Low;
@@ -872,6 +887,10 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
          if(low1 < m15Low.price && close1 > m15Low.price)
          {
             outSweptSwing = m15Low;
+            SMCLog("", symbol, "SWEEP_DETECTED",
+                   StringFormat("BUY Sweep Detected | CandleBar1Time=%s | Low1=%.5f | Close1=%.5f | SweptSwingTime=%s | SweptSwingPrice=%.5f",
+                                TimeToString(m15Bar1Time, TIME_DATE|TIME_MINUTES), low1, close1,
+                                TimeToString(m15Low.time, TIME_DATE|TIME_MINUTES), m15Low.price));
             return true;
          }
       }
@@ -887,6 +906,10 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
          if(high1 > m15High.price && close1 < m15High.price)
          {
             outSweptSwing = m15High;
+            SMCLog("", symbol, "SWEEP_DETECTED",
+                   StringFormat("SELL Sweep Detected | CandleBar1Time=%s | High1=%.5f | Close1=%.5f | SweptSwingTime=%s | SweptSwingPrice=%.5f",
+                                TimeToString(m15Bar1Time, TIME_DATE|TIME_MINUTES), high1, close1,
+                                TimeToString(m15High.time, TIME_DATE|TIME_MINUTES), m15High.price));
             return true;
          }
       }
@@ -929,9 +952,17 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
    int totalBars = iBars(symbol, SMC_M15_Timeframe);
    int maxBarIndex = (totalBars > 0) ? (totalBars - 3) : (startBar + 300);
 
+   double currentClose = iClose(symbol, SMC_M15_Timeframe, 1);
+
+   SMCLog("", symbol, "CHOCH_EVAL_START",
+          StringFormat("Direction=%s | SweepTime=%s | SweepBar=%d | CurrentM15Close=%.5f",
+                       direction == SIGNAL_BUY ? "BUY" : "SELL",
+                       TimeToString(sweepTime, TIME_DATE|TIME_MINUTES),
+                       sweepBar, currentClose));
+
    if(direction == SIGNAL_BUY)
    {
-      // 1. Find the most recent confirmed 5-bar M15 swing high before sweepTime (swing1)
+      // 1. Find swing1: most recent confirmed 5-bar M15 swing high directly associated with leg before sweepTime
       SMCSwing swing1;
       ZeroMemory(swing1);
       int swing1Bar = -1;
@@ -951,41 +982,61 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
       }
 
       if(!swing1.isValid || swing1Bar < 0)
+      {
+         SMCLog("", symbol, "CHOCH_EVAL_FAILED", "No confirmed 5-bar M15 swing high found prior to sweepTime");
          return false;
+      }
 
-      // 2. Find the preceding confirmed 5-bar M15 swing high before swing1 (swing2)
+      // 2. Find swing2: preceding confirmed 5-bar M15 swing high before swing1
       SMCSwing swing2;
       ZeroMemory(swing2);
 
-      for(int i = swing1Bar + 1; i <= maxBarIndex; i++)
+      for(int j = swing1Bar + 1; j <= maxBarIndex; j++)
       {
-         SMCSwing swing;
-         if(Get5BarSwingHigh(symbol, SMC_M15_Timeframe, i, swing))
+         SMCSwing candidatePrev;
+         if(Get5BarSwingHigh(symbol, SMC_M15_Timeframe, j, candidatePrev))
          {
-            if(swing.time < swing1.time)
+            if(candidatePrev.time < swing1.time)
             {
-               swing2 = swing;
+               swing2 = candidatePrev;
                break;
             }
          }
       }
 
       if(!swing2.isValid)
-         return false; // Structure cannot be established deterministically -> Return no CHoCH level
+      {
+         SMCLog("", symbol, "CHOCH_CANDIDATE_REJECTED",
+                StringFormat("Candidate high at %s (bar %d, price %.5f) rejected: no preceding confirmed swing high found to verify LH structure",
+                             TimeToString(swing1.time, TIME_DATE|TIME_MINUTES), swing1Bar, swing1.price));
+         return false;
+      }
 
       // 3. Verify structural relationship: swing1 must be a Lower High relative to swing2
       if(swing1.price < swing2.price)
       {
          outChochSwing = swing1;
+         bool bodyCloseSatisfied = (currentClose > swing1.price);
+
+         SMCLog("", symbol, "CHOCH_CANDIDATE_ACCEPTED",
+                StringFormat("Selected CHoCH LH at %s (bar %d, price %.5f) | Preceding High at %s (price %.5f, LH=TRUE) | CHoCH Level=%.5f | CurrentClose=%.5f | BodyCloseSatisfied=%s",
+                             TimeToString(swing1.time, TIME_DATE|TIME_MINUTES), swing1Bar, swing1.price,
+                             TimeToString(swing2.time, TIME_DATE|TIME_MINUTES), swing2.price,
+                             swing1.price, currentClose, bodyCloseSatisfied ? "YES" : "NO"));
          return true;
       }
-
-      // If swing1 is NOT a Lower High, do not fall back to swing2 or older highs. Return false.
-      return false;
+      else
+      {
+         SMCLog("", symbol, "CHOCH_CANDIDATE_REJECTED",
+                StringFormat("Candidate high at %s (bar %d, price %.5f) rejected: NOT an LH relative to preceding high at %s (price %.5f)",
+                             TimeToString(swing1.time, TIME_DATE|TIME_MINUTES), swing1Bar, swing1.price,
+                             TimeToString(swing2.time, TIME_DATE|TIME_MINUTES), swing2.price));
+         return false;
+      }
    }
    else if(direction == SIGNAL_SELL)
    {
-      // 1. Find the most recent confirmed 5-bar M15 swing low before sweepTime (swing1)
+      // 1. Find swing1: most recent confirmed 5-bar M15 swing low directly associated with leg before sweepTime
       SMCSwing swing1;
       ZeroMemory(swing1);
       int swing1Bar = -1;
@@ -1005,37 +1056,57 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, datetime sweepTim
       }
 
       if(!swing1.isValid || swing1Bar < 0)
+      {
+         SMCLog("", symbol, "CHOCH_EVAL_FAILED", "No confirmed 5-bar M15 swing low found prior to sweepTime");
          return false;
+      }
 
-      // 2. Find the preceding confirmed 5-bar M15 swing low before swing1 (swing2)
+      // 2. Find swing2: preceding confirmed 5-bar M15 swing low before swing1
       SMCSwing swing2;
       ZeroMemory(swing2);
 
-      for(int i = swing1Bar + 1; i <= maxBarIndex; i++)
+      for(int j = swing1Bar + 1; j <= maxBarIndex; j++)
       {
-         SMCSwing swing;
-         if(Get5BarSwingLow(symbol, SMC_M15_Timeframe, i, swing))
+         SMCSwing candidatePrev;
+         if(Get5BarSwingLow(symbol, SMC_M15_Timeframe, j, candidatePrev))
          {
-            if(swing.time < swing1.time)
+            if(candidatePrev.time < swing1.time)
             {
-               swing2 = swing;
+               swing2 = candidatePrev;
                break;
             }
          }
       }
 
       if(!swing2.isValid)
-         return false; // Structure cannot be established deterministically -> Return no CHoCH level
+      {
+         SMCLog("", symbol, "CHOCH_CANDIDATE_REJECTED",
+                StringFormat("Candidate low at %s (bar %d, price %.5f) rejected: no preceding confirmed swing low found to verify HL structure",
+                             TimeToString(swing1.time, TIME_DATE|TIME_MINUTES), swing1Bar, swing1.price));
+         return false;
+      }
 
       // 3. Verify structural relationship: swing1 must be a Higher Low relative to swing2
       if(swing1.price > swing2.price)
       {
          outChochSwing = swing1;
+         bool bodyCloseSatisfied = (currentClose < swing1.price);
+
+         SMCLog("", symbol, "CHOCH_CANDIDATE_ACCEPTED",
+                StringFormat("Selected CHoCH HL at %s (bar %d, price %.5f) | Preceding Low at %s (price %.5f, HL=TRUE) | CHoCH Level=%.5f | CurrentClose=%.5f | BodyCloseSatisfied=%s",
+                             TimeToString(swing1.time, TIME_DATE|TIME_MINUTES), swing1Bar, swing1.price,
+                             TimeToString(swing2.time, TIME_DATE|TIME_MINUTES), swing2.price,
+                             swing1.price, currentClose, bodyCloseSatisfied ? "YES" : "NO"));
          return true;
       }
-
-      // If swing1 is NOT a Higher Low, do not fall back to swing2 or older lows. Return false.
-      return false;
+      else
+      {
+         SMCLog("", symbol, "CHOCH_CANDIDATE_REJECTED",
+                StringFormat("Candidate low at %s (bar %d, price %.5f) rejected: NOT an HL relative to preceding low at %s (price %.5f)",
+                             TimeToString(swing1.time, TIME_DATE|TIME_MINUTES), swing1Bar, swing1.price,
+                             TimeToString(swing2.time, TIME_DATE|TIME_MINUTES), swing2.price));
+         return false;
+      }
    }
    return false;
 }
@@ -1309,11 +1380,14 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             setup.m15ChochSwing = chochSwing;
             setup.chochPrice    = chochSwing.price;
             setup.state         = SMC_WAITING_FOR_M15_CHOCH;
+            SMCLog(setup.setupID, symbol, "CHOCH_CANDIDATE_FOUND",
+                   StringFormat("Valid CHoCH candidate level identified at %.5f (time %s) -> Transitioning to SMC_WAITING_FOR_M15_CHOCH",
+                                setup.chochPrice, TimeToString(chochSwing.time, TIME_DATE|TIME_MINUTES)));
          }
          else
          {
-            // If no preceding M15 swing found in history prior to sweep, invalidate setup immediately
-            InvalidateSetup(setup, "No preceding M15 swing found for CHoCH");
+            // Invalidate strictly because no structural candidate exists prior to sweep
+            InvalidateSetup(setup, "No valid structural M15 swing candidate found for CHoCH prior to sweep");
          }
          break;
       }
@@ -1352,6 +1426,15 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          {
             setup.chochTime = iTime(symbol, SMC_M15_Timeframe, 1);
             setup.state     = SMC_M15_CHOCH_CONFIRMED;
+            SMCLog(setup.setupID, symbol, "CHOCH_CONFIRMED",
+                   StringFormat("M15 Candle Close %.5f broke CHoCH level %.5f -> Transitioning to SMC_M15_CHOCH_CONFIRMED",
+                                m15Close1, setup.chochPrice));
+         }
+         else
+         {
+            SMCLog(setup.setupID, symbol, "CHOCH_WAITING",
+                   StringFormat("Waiting for M15 body close beyond CHoCH level %.5f (Current M15 Close: %.5f)",
+                                setup.chochPrice, m15Close1));
          }
          break;
       }

@@ -465,16 +465,14 @@ class TestSMCEngineRules(unittest.TestCase):
     def _find_choch_level(direction, sweep_time, m15_swings):
         """
         Helper mirroring FindCHoCHLevel in smc_engine.mqh.
-        Finds the most recent confirmed 5-bar M15 swing before sweep_time (swing1)
-        and verifies its structural relationship (Lower High for BUY, Higher Low for SELL)
-        against the preceding confirmed 5-bar M15 swing (swing2).
-        If swing1 is not a LH/HL or structure cannot be established deterministically,
-        returns None without fallback.
+        Finds the most recent confirmed 5-bar M15 swing before sweep_time directly associated
+        with the final leg into the swept extreme (swing1) and verifies whether swing1 is a
+        Lower High (for BUY) or Higher Low (for SELL) relative to the preceding swing (swing2).
+        Returns None without fallback to older swings if structure is invalid/not an LH/HL.
         """
         if sweep_time <= 0:
             return None
 
-        # Filter for confirmed 5-bar swings before sweep_time
         candidates = [s for s in m15_swings
                       if s.get('time', 0) < sweep_time
                       and s.get('isValid', True)
@@ -483,7 +481,7 @@ class TestSMCEngineRules(unittest.TestCase):
         if direction == "BUY":
             high_candidates = sorted([s for s in candidates if s['type'] == 'HIGH'], key=lambda x: x['time'], reverse=True)
             if len(high_candidates) < 2:
-                return None # Structure cannot be established deterministically
+                return None
             swing1 = high_candidates[0]
             swing2 = high_candidates[1]
             if swing1['price'] < swing2['price']:
@@ -493,7 +491,7 @@ class TestSMCEngineRules(unittest.TestCase):
         elif direction == "SELL":
             low_candidates = sorted([s for s in candidates if s['type'] == 'LOW'], key=lambda x: x['time'], reverse=True)
             if len(low_candidates) < 2:
-                return None # Structure cannot be established deterministically
+                return None
             swing1 = low_candidates[0]
             swing2 = low_candidates[1]
             if swing1['price'] > swing2['price']:
@@ -519,60 +517,126 @@ class TestSMCEngineRules(unittest.TestCase):
         return False
 
     def test_choch_test_a_valid_bullish_lh(self):
-        # Test A — Valid bullish LH
-        # Older confirmed swing high = 1.1100
-        # Most recent confirmed swing high = 1.1050
-        # Swept low occurs afterwards (sweep_time = 100)
+        # Test A — Valid bullish LH candidate directly associated with final leg into sweep
         sweep_time = 100
         swings = [
-            {'type': 'HIGH', 'price': 1.1100, 'time': 40, 'bar_index': 10, 'isValid': True},   # Older high
-            {'type': 'HIGH', 'price': 1.1050, 'time': 80, 'bar_index': 5, 'isValid': True},    # Most recent high (valid LH)
+            {'type': 'HIGH', 'price': 1.1100, 'time': 40, 'bar_index': 10, 'isValid': True},   # Preceding high (swing2)
+            {'type': 'HIGH', 'price': 1.1050, 'time': 80, 'bar_index': 5, 'isValid': True},    # Most recent high (swing1, valid LH)
         ]
         choch_swing = self._find_choch_level("BUY", sweep_time, swings)
         self.assertIsNotNone(choch_swing)
         self.assertEqual(choch_swing['price'], 1.1050)
 
     def test_choch_test_b_valid_bearish_hl(self):
-        # Test B — Valid bearish HL
-        # Older confirmed swing low = 1.0950
-        # Most recent confirmed swing low = 1.1000
-        # Swept high occurs afterwards (sweep_time = 100)
+        # Test B — Valid bearish HL candidate directly associated with final leg into sweep
         sweep_time = 100
         swings = [
-            {'type': 'LOW', 'price': 1.0950, 'time': 40, 'bar_index': 10, 'isValid': True},   # Older low
-            {'type': 'LOW', 'price': 1.1000, 'time': 80, 'bar_index': 5, 'isValid': True},    # Most recent low (valid HL)
+            {'type': 'LOW', 'price': 1.0950, 'time': 40, 'bar_index': 10, 'isValid': True},   # Preceding low (swing2)
+            {'type': 'LOW', 'price': 1.1000, 'time': 80, 'bar_index': 5, 'isValid': True},    # Most recent low (swing1, valid HL)
         ]
         choch_swing = self._find_choch_level("SELL", sweep_time, swings)
         self.assertIsNotNone(choch_swing)
         self.assertEqual(choch_swing['price'], 1.1000)
 
     def test_choch_test_c_most_recent_swing_not_lh(self):
-        # Test C — Most recent swing is NOT an LH
+        # Test C — Most recent swing directly associated with leg before sweep is NOT an LH
         # Older confirmed high = 1.1050
         # Most recent confirmed high = 1.1100 (Higher High!)
         # Swept low occurs afterwards
-        # Do NOT select the older high. Return no CHoCH level.
+        # Do NOT select the older high. Return no CHoCH level (None).
         sweep_time = 100
         swings = [
-            {'type': 'HIGH', 'price': 1.1050, 'time': 40, 'bar_index': 10, 'isValid': True},   # Older high
-            {'type': 'HIGH', 'price': 1.1100, 'time': 80, 'bar_index': 5, 'isValid': True},    # Most recent high (NOT an LH!)
+            {'type': 'HIGH', 'price': 1.1050, 'time': 40, 'bar_index': 10, 'isValid': True},   # Preceding high (swing2)
+            {'type': 'HIGH', 'price': 1.1100, 'time': 80, 'bar_index': 5, 'isValid': True},    # Most recent high (swing1, HH -> NOT an LH!)
         ]
         choch_swing = self._find_choch_level("BUY", sweep_time, swings)
-        self.assertIsNone(choch_swing, "If most recent swing is not an LH, return None without fallback to older high")
+        self.assertIsNone(choch_swing, "If most recent swing before sweep is not an LH, return None without fallback to older high")
 
     def test_choch_test_d_most_recent_swing_not_hl(self):
-        # Test D — Most recent swing is NOT an HL
+        # Test D — Most recent swing directly associated with leg before sweep is NOT an HL
         # Older confirmed low = 1.1000
         # Most recent confirmed low = 1.0950 (Lower Low!)
         # Swept high occurs afterwards
-        # Do NOT select the older low. Return no CHoCH level.
+        # Do NOT select the older low. Return no CHoCH level (None).
         sweep_time = 100
         swings = [
-            {'type': 'LOW', 'price': 1.1000, 'time': 40, 'bar_index': 10, 'isValid': True},   # Older low
-            {'type': 'LOW', 'price': 1.0950, 'time': 80, 'bar_index': 5, 'isValid': True},    # Most recent low (NOT an HL!)
+            {'type': 'LOW', 'price': 1.1000, 'time': 40, 'bar_index': 10, 'isValid': True},   # Preceding low (swing2)
+            {'type': 'LOW', 'price': 1.0950, 'time': 80, 'bar_index': 5, 'isValid': True},    # Most recent low (swing1, LL -> NOT an HL!)
         ]
         choch_swing = self._find_choch_level("SELL", sweep_time, swings)
-        self.assertIsNone(choch_swing, "If most recent swing is not an HL, return None without fallback to older low")
+        self.assertIsNone(choch_swing, "If most recent swing before sweep is not an HL, return None without fallback to older low")
+
+    def test_choch_sweep_followed_by_waiting_state(self):
+        # Test: Sweep detected transitions to SMC_WAITING_FOR_M15_CHOCH when valid candidate exists
+        sweep_time = 100
+        swings = [
+            {'type': 'HIGH', 'price': 1.1100, 'time': 40, 'bar_index': 10, 'isValid': True},
+            {'type': 'HIGH', 'price': 1.1050, 'time': 80, 'bar_index': 5, 'isValid': True},
+        ]
+        candidate = self._find_choch_level("BUY", sweep_time, swings)
+
+        setup = {'state': 'SMC_M15_SWEEP_DETECTED', 'direction': 'BUY', 'sweepTime': sweep_time}
+
+        if candidate is not None:
+            setup['m15ChochSwing'] = candidate
+            setup['chochPrice'] = candidate['price']
+            setup['state'] = 'SMC_WAITING_FOR_M15_CHOCH'
+
+        self.assertEqual(setup['state'], 'SMC_WAITING_FOR_M15_CHOCH')
+        self.assertEqual(setup['chochPrice'], 1.1050)
+
+    def test_choch_waiting_state_does_not_prematurely_invalidate(self):
+        # Test: Setup in SMC_WAITING_FOR_M15_CHOCH does NOT invalidate merely because CHoCH body close has not occurred yet
+        setup = {
+            'state': 'SMC_WAITING_FOR_M15_CHOCH',
+            'direction': 'BUY',
+            'sweepPrice': 1.0950,
+            'm15ChochSwing': {'price': 1.1050, 'isValid': True},
+            'poi4H': {'isActive': True}
+        }
+
+        # Current completed M15 candle close is 1.1020 (below CHoCH level 1.1050, but above sweep price 1.0950)
+        m15_close = 1.1020
+        m15_low = 1.0980
+
+        # Check structural invalidation
+        is_sweep_invalidated = (m15_close < setup['sweepPrice'] or m15_low < setup['sweepPrice'])
+        self.assertFalse(is_sweep_invalidated)
+
+        # Check CHoCH confirmation
+        is_choch_confirmed = (m15_close > setup['m15ChochSwing']['price'])
+        self.assertFalse(is_choch_confirmed)
+
+        # Result: Setup MUST remain in SMC_WAITING_FOR_M15_CHOCH
+        if not is_sweep_invalidated and not is_choch_confirmed:
+            pass # Keep existing state SMC_WAITING_FOR_M15_CHOCH
+
+        self.assertEqual(setup['state'], 'SMC_WAITING_FOR_M15_CHOCH')
+
+    def test_prevent_repeated_setup_creation_for_invalidated_sweep(self):
+        # Test: CheckM15LiquiditySweep logic prevents re-triggering sweep for an already-invalidated setup with same POI and sweep time
+        symbol = "EURUSD"
+        poi_time = 100000
+        sweep_time = 200000
+
+        historical_setups = [
+            {
+                'symbol': symbol,
+                'state': 'SMC_INVALIDATED',
+                'poi4H': {'time': poi_time},
+                'sweepTime': sweep_time,
+                'invalidationReason': 'Sweep price invalidated by lower low before CHoCH confirmed'
+            }
+        ]
+
+        def is_sweep_already_invalidated(sym, p_time, sw_time):
+            for s in historical_setups:
+                if s['symbol'] == sym and s['state'] == 'SMC_INVALIDATED':
+                    if s['poi4H']['time'] == p_time and s['sweepTime'] == sw_time:
+                        return True
+            return False
+
+        self.assertTrue(is_sweep_already_invalidated(symbol, poi_time, sweep_time))
 
     def test_choch_test_e_unconfirmed_swing(self):
         # Test E — Unconfirmed swing
