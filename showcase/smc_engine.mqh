@@ -125,6 +125,7 @@ struct SMCSetup
    SMCSwing           m15ChochSwing;  // LH for Buy CHoCH, HL for Sell CHoCH
    double             chochPrice;
    datetime           chochTime;
+   datetime           lastEvaluatedM15ChochTime; // Timestamp of last evaluated completed M15 candle for CHoCH
 
    // M5 Execution Data
    SMCFVG             m5FVG;
@@ -1117,7 +1118,7 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &s
    return FindCHoCHLevel(symbol, direction, sweptSwing.time, outChochSwing);
 }
 
-bool CheckM15CHoCH(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &chochSwing)
+bool CheckM15CHoCH(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &chochSwing, bool newCompletedBar = true)
 {
    if(chochSwing.price <= 0) return false;
 
@@ -1127,6 +1128,7 @@ bool CheckM15CHoCH(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &ch
    double high1  = iHigh(symbol, SMC_M15_Timeframe, barIndex);
    double low1   = iLow(symbol, SMC_M15_Timeframe, barIndex);
    double close1 = iClose(symbol, SMC_M15_Timeframe, barIndex);
+   datetime currentTesterTime = TimeCurrent();
 
    bool result = false;
    string comparisonStr = "";
@@ -1145,12 +1147,14 @@ bool CheckM15CHoCH(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &ch
    }
 
    SMCLog("", symbol, "CHOCH_CHECK",
-          StringFormat("Direction=%s | BarIndex=%d | BarTime=%s | Completed=TRUE | Open=%.5f | High=%.5f | Low=%.5f | Close=%.5f | CHoCHLevel=%.5f | Comparison=(%s) | Result=%s",
+          StringFormat("Direction=%s | CandidateLevel=%.5f | EvaluatedBarIndex=%d | EvaluatedBarTime=%s | IsCompleted=TRUE | Open=%.5f | High=%.5f | Low=%.5f | Close=%.5f | CurrentTesterTime=%s | NewCompletedBar=%s | Comparison=(%s) | Result=%s",
                        direction == SIGNAL_BUY ? "BUY" : "SELL",
+                       chochSwing.price,
                        barIndex,
                        TimeToString(barTime, TIME_DATE|TIME_MINUTES),
                        open1, high1, low1, close1,
-                       chochSwing.price,
+                       TimeToString(currentTesterTime, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
+                       newCompletedBar ? "YES" : "NO",
                        comparisonStr,
                        result ? "TRUE" : "FALSE"));
 
@@ -1443,19 +1447,26 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             break;
          }
 
-         if(CheckM15CHoCH(symbol, setup.direction, setup.m15ChochSwing))
+         datetime m15Bar1Time = iTime(symbol, SMC_M15_Timeframe, 1);
+         if(m15Bar1Time > 0 && m15Bar1Time != setup.lastEvaluatedM15ChochTime)
          {
-            setup.chochTime = iTime(symbol, SMC_M15_Timeframe, 1);
-            setup.state     = SMC_M15_CHOCH_CONFIRMED;
-            SMCLog(setup.setupID, symbol, "CHOCH_CONFIRMED",
-                   StringFormat("M15 Candle Close %.5f broke CHoCH level %.5f -> Transitioning to SMC_M15_CHOCH_CONFIRMED",
-                                m15Close1, setup.chochPrice));
-         }
-         else
-         {
-            SMCLog(setup.setupID, symbol, "CHOCH_WAITING",
-                   StringFormat("Waiting for M15 body close beyond CHoCH level %.5f (Completed M15 Close [1]: %.5f)",
-                                setup.chochPrice, m15Close1));
+            bool isNewBar = (setup.lastEvaluatedM15ChochTime > 0);
+            setup.lastEvaluatedM15ChochTime = m15Bar1Time;
+
+            if(CheckM15CHoCH(symbol, setup.direction, setup.m15ChochSwing, isNewBar))
+            {
+               setup.chochTime = m15Bar1Time;
+               setup.state     = SMC_M15_CHOCH_CONFIRMED;
+               SMCLog(setup.setupID, symbol, "CHOCH_CONFIRMED",
+                      StringFormat("M15 Candle Close %.5f broke CHoCH level %.5f -> Transitioning to SMC_M15_CHOCH_CONFIRMED",
+                                   m15Close1, setup.chochPrice));
+            }
+            else
+            {
+               SMCLog(setup.setupID, symbol, "CHOCH_WAITING",
+                      StringFormat("Waiting for M15 body close beyond CHoCH level %.5f (Completed M15 Close [1] at %s: %.5f)",
+                                   setup.chochPrice, TimeToString(m15Bar1Time, TIME_DATE|TIME_MINUTES), m15Close1));
+            }
          }
          break;
       }

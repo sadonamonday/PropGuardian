@@ -1367,6 +1367,54 @@ class TestSMCStateMachineAudits(unittest.TestCase):
 
         self.assertEqual(setup['state'], 'SMC_INVALIDATED')
 
+    def test_m15_choch_evaluator_candle_progression_gating(self):
+        """
+        Verify that M15 CHoCH evaluation only executes once per newly completed M15 candle
+        and ignores ticks within the same completed candle window or forming candle.
+        """
+        eval_count = 0
+
+        setup = {
+            'state': 'SMC_WAITING_FOR_M15_CHOCH',
+            'direction': 'SELL',
+            'm15ChochSwing': {'price': 1.35646, 'isValid': True},
+            'lastEvaluatedM15ChochTime': 0
+        }
+
+        def process_tick(s, m15_bar1_time, m15_close):
+            nonlocal eval_count
+            if s['state'] != 'SMC_WAITING_FOR_M15_CHOCH':
+                return
+
+            if m15_bar1_time > 0 and m15_bar1_time != s['lastEvaluatedM15ChochTime']:
+                s['lastEvaluatedM15ChochTime'] = m15_bar1_time
+                eval_count += 1
+                if m15_close < s['m15ChochSwing']['price']:
+                    s['state'] = 'SMC_M15_CHOCH_CONFIRMED'
+
+        # Tick 1 at 00:00:35 - completed M15 bar 1 is 2023.01.02 23:45, close 1.35687 (> 1.35646 HL)
+        process_tick(setup, 1672703100, 1.35687)
+        self.assertEqual(eval_count, 1)
+        self.assertEqual(setup['state'], 'SMC_WAITING_FOR_M15_CHOCH')
+
+        # Tick 2 at 00:00:40 (5 seconds later) - same completed bar 1 (2023.01.02 23:45) -> MUST NOT RE-EVALUATE
+        process_tick(setup, 1672703100, 1.35687)
+        self.assertEqual(eval_count, 1)
+
+        # Tick 3 at 00:01:00 (multiple ticks later within same M15 bar) -> STILL NOT RE-EVALUATED
+        process_tick(setup, 1672703100, 1.35687)
+        self.assertEqual(eval_count, 1)
+
+        # Tick at 00:15:05 - NEW completed M15 bar 1 at 2023.01.03 00:00, close 1.35650 (> HL)
+        process_tick(setup, 1672704000, 1.35650)
+        self.assertEqual(eval_count, 2)
+        self.assertEqual(setup['state'], 'SMC_WAITING_FOR_M15_CHOCH')
+
+        # Tick at 00:30:05 - NEW completed M15 bar 1 at 2023.01.03 00:15, close 1.35610 (< 1.35646 HL -> CONFIRMED!)
+        process_tick(setup, 1672704900, 1.35610)
+        self.assertEqual(eval_count, 3)
+        self.assertEqual(setup['state'], 'SMC_M15_CHOCH_CONFIRMED')
+
 
 if __name__ == "__main__":
     unittest.main()
