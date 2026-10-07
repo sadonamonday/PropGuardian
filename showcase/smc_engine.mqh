@@ -1119,21 +1119,42 @@ bool FindCHoCHLevel(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &s
 
 bool CheckM15CHoCH(string symbol, ENUM_SIGNAL_TYPE direction, const SMCSwing &chochSwing)
 {
-   if(!chochSwing.isValid) return false;
+   if(chochSwing.price <= 0) return false;
 
-   double close1 = iClose(symbol, SMC_M15_Timeframe, 1);
+   int barIndex = 1;
+   datetime barTime = iTime(symbol, SMC_M15_Timeframe, barIndex);
+   double open1  = iOpen(symbol, SMC_M15_Timeframe, barIndex);
+   double high1  = iHigh(symbol, SMC_M15_Timeframe, barIndex);
+   double low1   = iLow(symbol, SMC_M15_Timeframe, barIndex);
+   double close1 = iClose(symbol, SMC_M15_Timeframe, barIndex);
+
+   bool result = false;
+   string comparisonStr = "";
 
    if(direction == SIGNAL_BUY)
    {
       // Body close above Lower High
-      if(close1 > chochSwing.price) return true;
+      result = (close1 > chochSwing.price);
+      comparisonStr = StringFormat("Close %.5f > LH %.5f", close1, chochSwing.price);
    }
    else if(direction == SIGNAL_SELL)
    {
       // Body close below Higher Low
-      if(close1 < chochSwing.price) return true;
+      result = (close1 < chochSwing.price);
+      comparisonStr = StringFormat("Close %.5f < HL %.5f", close1, chochSwing.price);
    }
-   return false;
+
+   SMCLog("", symbol, "CHOCH_CHECK",
+          StringFormat("Direction=%s | BarIndex=%d | BarTime=%s | Completed=TRUE | Open=%.5f | High=%.5f | Low=%.5f | Close=%.5f | CHoCHLevel=%.5f | Comparison=(%s) | Result=%s",
+                       direction == SIGNAL_BUY ? "BUY" : "SELL",
+                       barIndex,
+                       TimeToString(barTime, TIME_DATE|TIME_MINUTES),
+                       open1, high1, low1, close1,
+                       chochSwing.price,
+                       comparisonStr,
+                       result ? "TRUE" : "FALSE"));
+
+   return result;
 }
 
 //+------------------------------------------------------------------+
@@ -1433,7 +1454,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          else
          {
             SMCLog(setup.setupID, symbol, "CHOCH_WAITING",
-                   StringFormat("Waiting for M15 body close beyond CHoCH level %.5f (Current M15 Close: %.5f)",
+                   StringFormat("Waiting for M15 body close beyond CHoCH level %.5f (Completed M15 Close [1]: %.5f)",
                                 setup.chochPrice, m15Close1));
          }
          break;

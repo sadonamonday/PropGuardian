@@ -664,6 +664,56 @@ class TestSMCEngineRules(unittest.TestCase):
         is_choch_body = self._check_m15_choch("BUY", choch_lh, body_close_bar1)
         self.assertTrue(is_choch_body, "Completed candle body close beyond CHoCH level must confirm CHoCH")
 
+    def test_sell_choch_confirmation_edge_cases(self):
+        # Locked SELL CHoCH Rule: Close[completed bar 1] < HL
+        choch_hl = {'type': 'LOW', 'price': 1.36765, 'isValid': True}
+
+        # 1. Completed candle closes below HL -> CONFIRMED
+        close_below = {'open': 1.36800, 'high': 1.36820, 'low': 1.36600, 'close': 1.36616}
+        self.assertTrue(self._check_m15_choch("SELL", choch_hl, close_below))
+
+        # 2. Completed candle closes exactly at HL -> NOT CONFIRMED (WAITING)
+        close_exact = {'open': 1.36800, 'high': 1.36820, 'low': 1.36700, 'close': 1.36765}
+        self.assertFalse(self._check_m15_choch("SELL", choch_hl, close_exact))
+
+        # 3. Completed candle closes above HL -> WAITING
+        close_above = {'open': 1.36800, 'high': 1.36850, 'low': 1.36750, 'close': 1.36780}
+        self.assertFalse(self._check_m15_choch("SELL", choch_hl, close_above))
+
+        # 4. Candle wick below HL but body closes above HL -> NOT CONFIRMED
+        wick_below = {'open': 1.36800, 'high': 1.36820, 'low': 1.36600, 'close': 1.36770}
+        self.assertFalse(self._check_m15_choch("SELL", choch_hl, wick_below))
+
+    def test_buy_choch_confirmation_edge_cases(self):
+        # Locked BUY CHoCH Rule: Close[completed bar 1] > LH
+        choch_lh = {'type': 'HIGH', 'price': 1.10600, 'isValid': True}
+
+        # 1. Completed candle closes above LH -> CONFIRMED
+        close_above = {'open': 1.10400, 'high': 1.10750, 'low': 1.10350, 'close': 1.10650}
+        self.assertTrue(self._check_m15_choch("BUY", choch_lh, close_above))
+
+        # 2. Completed candle closes exactly at LH -> NOT CONFIRMED (WAITING)
+        close_exact = {'open': 1.10400, 'high': 1.10650, 'low': 1.10350, 'close': 1.10600}
+        self.assertFalse(self._check_m15_choch("BUY", choch_lh, close_exact))
+
+        # 3. Completed candle closes below LH -> WAITING
+        close_below = {'open': 1.10400, 'high': 1.10580, 'low': 1.10350, 'close': 1.10550}
+        self.assertFalse(self._check_m15_choch("BUY", choch_lh, close_below))
+
+        # 4. Candle wick above LH but body closes below LH -> NOT CONFIRMED
+        wick_above = {'open': 1.10400, 'high': 1.10750, 'low': 1.10350, 'close': 1.10580}
+        self.assertFalse(self._check_m15_choch("BUY", choch_lh, wick_above))
+
+    def test_forming_vs_completed_candle_choch_handling(self):
+        # Forming candle (bar 0) vs Completed candle (bar 1)
+        choch_hl = {'type': 'LOW', 'price': 1.36765, 'isValid': True}
+
+        bar0_forming = {'open': 1.36800, 'high': 1.36820, 'low': 1.36500, 'close': 1.36550} # Bar 0 forming
+        bar1_completed_waiting = {'open': 1.36800, 'high': 1.36850, 'low': 1.36750, 'close': 1.36780} # Bar 1 completed (> HL)
+
+        # Evaluating completed candle bar 1 must return FALSE (waiting) even if bar 0 is low
+        self.assertFalse(self._check_m15_choch("SELL", choch_hl, bar1_completed_waiting))
+
     def test_choch_test_g_ambiguous_structure(self):
         # Test G — Ambiguous structure
         # If there is insufficient confirmed structure to establish the LH/HL relationship, return no CHoCH level.
