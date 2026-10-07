@@ -137,10 +137,7 @@ void OnTimer()
    }
    else
    {
-      // 5. Advance SMC Engine State Machine for all tradeable symbols (PropGuardian SMC Strategy v0.1)
-      SMCEngine_OnTick();
-
-      // Cancel active pending limit order if its setup was invalidated
+      // 5. Check pending limit order cancellation if setup was invalidated
       if(g_pendingOrderTicket > 0)
       {
          for(int s = 0; s < ArraySize(g_SMCSetups); s++)
