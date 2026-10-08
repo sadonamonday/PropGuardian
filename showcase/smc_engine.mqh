@@ -1404,6 +1404,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          {
             setup.m15ChochSwing = chochSwing;
             setup.chochPrice    = chochSwing.price;
+            setup.lastEvaluatedM15ChochTime = setup.sweepTime; // Initialize with sweep candle time so it is not re-evaluated as CHoCH confirmation
             setup.state         = SMC_WAITING_FOR_M15_CHOCH;
             SMCLog(setup.setupID, symbol, "CHOCH_CANDIDATE_FOUND",
                    StringFormat("Valid CHoCH candidate level identified at %.5f (time %s) -> Transitioning to SMC_WAITING_FOR_M15_CHOCH",
@@ -1419,11 +1420,15 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_WAITING_FOR_M15_CHOCH:
       {
-         // Structural Invalidation Check: sweep level breached
-         double m15Close1 = iClose(symbol, SMC_M15_Timeframe, 1);
-         double m15Low1   = iLow(symbol, SMC_M15_Timeframe, 1);
-         double m15High1  = iHigh(symbol, SMC_M15_Timeframe, 1);
+         datetime m15Bar1Time = iTime(symbol, SMC_M15_Timeframe, 1);
+         double m15Close1     = iClose(symbol, SMC_M15_Timeframe, 1);
+         double m15Low1       = iLow(symbol, SMC_M15_Timeframe, 1);
+         double m15High1      = iHigh(symbol, SMC_M15_Timeframe, 1);
 
+         if(m15Bar1Time <= 0 || m15Close1 <= 0)
+            break;
+
+         // Structural Invalidation Check: sweep level breached
          if(setup.direction == SIGNAL_BUY)
          {
             if(m15Close1 < setup.sweepPrice || m15Low1 < setup.sweepPrice)
@@ -1447,13 +1452,12 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             break;
          }
 
-         datetime m15Bar1Time = iTime(symbol, SMC_M15_Timeframe, 1);
-         if(m15Bar1Time > 0 && m15Bar1Time != setup.lastEvaluatedM15ChochTime)
+         // Enforce strict chronological progression: evaluate newly completed M15 candles once
+         if(m15Bar1Time > setup.lastEvaluatedM15ChochTime)
          {
-            bool isNewBar = (setup.lastEvaluatedM15ChochTime > 0);
             setup.lastEvaluatedM15ChochTime = m15Bar1Time;
 
-            if(CheckM15CHoCH(symbol, setup.direction, setup.m15ChochSwing, isNewBar))
+            if(CheckM15CHoCH(symbol, setup.direction, setup.m15ChochSwing, true))
             {
                setup.chochTime = m15Bar1Time;
                setup.state     = SMC_M15_CHOCH_CONFIRMED;
@@ -1464,8 +1468,10 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             else
             {
                SMCLog(setup.setupID, symbol, "CHOCH_WAITING",
-                      StringFormat("Waiting for M15 body close beyond CHoCH level %.5f (Completed M15 Close [1] at %s: %.5f)",
-                                   setup.chochPrice, TimeToString(m15Bar1Time, TIME_DATE|TIME_MINUTES), m15Close1));
+                      StringFormat("[M15] NEW_COMPLETED_BAR BarTime=%s | Direction=%s | CandidateLevel=%.5f | Close=%.5f | Result=NOT_CONFIRMED",
+                                   TimeToString(m15Bar1Time, TIME_DATE|TIME_MINUTES),
+                                   setup.direction == SIGNAL_BUY ? "BUY" : "SELL",
+                                   setup.chochPrice, m15Close1));
             }
          }
          break;

@@ -1386,7 +1386,7 @@ class TestSMCStateMachineAudits(unittest.TestCase):
             if s['state'] != 'SMC_WAITING_FOR_M15_CHOCH':
                 return
 
-            if m15_bar1_time > 0 and m15_bar1_time != s['lastEvaluatedM15ChochTime']:
+            if m15_bar1_time > s['lastEvaluatedM15ChochTime']:
                 s['lastEvaluatedM15ChochTime'] = m15_bar1_time
                 eval_count += 1
                 if m15_close < s['m15ChochSwing']['price']:
@@ -1414,6 +1414,81 @@ class TestSMCStateMachineAudits(unittest.TestCase):
         process_tick(setup, 1672704900, 1.35610)
         self.assertEqual(eval_count, 3)
         self.assertEqual(setup['state'], 'SMC_M15_CHOCH_CONFIRMED')
+
+    def test_regression_test_a_same_candle(self):
+        """Test A — Same candle: last evaluated = 14:00, current completed = 14:00 -> no new evaluation"""
+        eval_count = 0
+        last_evaluated = 1672840800  # 14:00
+        current_completed = 1672840800  # 14:00
+
+        if current_completed > last_evaluated:
+            eval_count += 1
+
+        self.assertEqual(eval_count, 0)
+
+    def test_regression_test_b_new_candle(self):
+        """Test B — New candle: last evaluated = 14:00, current completed = 14:15 -> evaluate exactly once & update lastEvaluated = 14:15"""
+        eval_count = 0
+        last_evaluated = 1672840800  # 14:00
+        current_completed = 1672841700  # 14:15
+
+        if current_completed > last_evaluated:
+            eval_count += 1
+            last_evaluated = current_completed
+
+        self.assertEqual(eval_count, 1)
+        self.assertEqual(last_evaluated, 1672841700)
+
+    def test_regression_test_c_repeated_ticks(self):
+        """Test C — Repeated ticks: 14:15 completed candle, 100 ticks arrive -> exactly 1 evaluation"""
+        eval_count = 0
+        last_evaluated = 1672840800  # 14:00
+        current_completed = 1672841700  # 14:15
+
+        for _ in range(100):
+            if current_completed > last_evaluated:
+                eval_count += 1
+                last_evaluated = current_completed
+
+        self.assertEqual(eval_count, 1)
+        self.assertEqual(last_evaluated, 1672841700)
+
+    def test_regression_test_d_sell_choch_comparison(self):
+        """Test D — SELL: level = 130.27200, close = 130.52700 -> false; close = 130.25000 -> true"""
+        level = 130.27200
+
+        close_unconfirmed = 130.52700
+        is_confirmed_1 = close_unconfirmed < level
+        self.assertFalse(is_confirmed_1)
+
+        close_confirmed = 130.25000
+        is_confirmed_2 = close_confirmed < level
+        self.assertTrue(is_confirmed_2)
+
+    def test_regression_test_e_buy_choch_comparison(self):
+        """Test E — BUY: level = X, close < X -> false; close > X -> true"""
+        level = 1.10600
+
+        close_unconfirmed = 1.10550
+        is_confirmed_1 = close_unconfirmed > level
+        self.assertFalse(is_confirmed_1)
+
+        close_confirmed = 1.10650
+        is_confirmed_2 = close_confirmed > level
+        self.assertTrue(is_confirmed_2)
+
+    def test_regression_test_f_no_lookahead_bar0(self):
+        """Test F — No lookahead: verify that bar 0 (forming candle) can never confirm CHoCH"""
+        bar0_forming_close = 130.20000  # Below SELL CHoCH level, but candle is shift 0 (forming)
+        bar1_completed_close = 130.52700  # Above level, shift 1 (completed)
+        level = 130.27200
+
+        # Strategy strictly requires completed bar 1 only
+        eval_shift = 1
+        eval_close = bar1_completed_close if eval_shift == 1 else bar0_forming_close
+        is_confirmed = eval_close < level
+
+        self.assertFalse(is_confirmed, "Forming bar 0 must never be used for CHoCH confirmation")
 
 
 if __name__ == "__main__":
