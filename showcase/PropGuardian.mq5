@@ -6,7 +6,7 @@
 #property link      "https://propguardian.ai"
 #property version   "1.00"
 #property strict
-
+#include "signal_engine.mqh"
 #include "smc_engine.mqh"
 #include "risk_manager.mqh"
 #include "position_manager.mqh"
