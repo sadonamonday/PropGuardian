@@ -18,7 +18,10 @@ input bool              SMC_UseStrategy      = true;         // Enable PropGuard
 input ENUM_TIMEFRAMES   SMC_4H_Timeframe     = PERIOD_H4;    // Context Timeframe (4H)
 input ENUM_TIMEFRAMES   SMC_M15_Timeframe    = PERIOD_M15;   // Structural Timeframe (M15)
 input ENUM_TIMEFRAMES   SMC_M5_Timeframe     = PERIOD_M5;    // Execution Timeframe (M5)
-input double            SMC_FVG_EntryPercent = 50.0;         // FVG Entry Percentage (50.0 = midpoint)
+input double            SMC_FVG_EntryPercent = 60.0;         // FVG retrace depth; 50 = midpoint, 60 = shallower entry
+input int               SMC_M15_SwingLookback = 24;           // Recent M15 swings considered for liquidity sweeps
+input int               SMC_M5_SwingLookback  = 20;           // Recent M5 swings considered for displacement
+input double            SMC_Min_RewardRisk    = 1.5;          // Reject structural targets below this reward/risk
 input bool              SMC_DebugLogging     = true;         // Enable Structured Debug Logging
 input bool              SMC_DrawChartObjects = true;         // Enable Visual Chart Objects on MT5 Tester/Chart
 input int               SMC_MaxActiveSetups  = 5;            // Max Simultaneous Active Setups Across Symbols
@@ -939,7 +942,7 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
    if(direction == SIGNAL_BUY && poi.type == POI_TYPE_DEMAND)
    {
       SMCSwing m15Low;
-      if(FindMostRecentSwingLow(symbol, SMC_M15_Timeframe, 40, m15Low))
+      if(FindMostRecentSwingLow(symbol, SMC_M15_Timeframe, SMC_M15_SwingLookback, m15Low))
       {
          double low1   = iLow(symbol, SMC_M15_Timeframe, 1);
          double close1 = iClose(symbol, SMC_M15_Timeframe, 1);
@@ -959,7 +962,7 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
    else if(direction == SIGNAL_SELL && poi.type == POI_TYPE_SUPPLY)
    {
       SMCSwing m15High;
-      if(FindMostRecentSwingHigh(symbol, SMC_M15_Timeframe, 40, m15High))
+      if(FindMostRecentSwingHigh(symbol, SMC_M15_Timeframe, SMC_M15_SwingLookback, m15High))
       {
          double high1  = iHigh(symbol, SMC_M15_Timeframe, 1);
          double close1 = iClose(symbol, SMC_M15_Timeframe, 1);
@@ -1260,7 +1263,7 @@ bool CheckM5DisplacementAndFVG(string symbol, ENUM_SIGNAL_TYPE direction, SMCSwi
 
       // 2. C2 body close must break relevant confirmed M5 swing high (prior to C2, i.e. bar >= 3)
       SMCSwing m5High;
-      if(!FindMostRecentSwingHigh(symbol, SMC_M5_Timeframe, 30, m5High, 3)) return false;
+      if(!FindMostRecentSwingHigh(symbol, SMC_M5_Timeframe, SMC_M5_SwingLookback, m5High, 3)) return false;
       if(closeC2 <= m5High.price) return false;
 
       // 3. C3 completes 3-candle sequence creating valid bullish FVG (Low(C3) > High(C1))
@@ -1286,7 +1289,7 @@ bool CheckM5DisplacementAndFVG(string symbol, ENUM_SIGNAL_TYPE direction, SMCSwi
 
       // 2. C2 body close must break relevant confirmed M5 swing low (prior to C2, i.e. bar >= 3)
       SMCSwing m5Low;
-      if(!FindMostRecentSwingLow(symbol, SMC_M5_Timeframe, 30, m5Low, 3)) return false;
+      if(!FindMostRecentSwingLow(symbol, SMC_M5_Timeframe, SMC_M5_SwingLookback, m5Low, 3)) return false;
       if(closeC2 >= m5Low.price) return false;
 
       // 3. C3 completes 3-candle sequence creating valid bearish FVG (High(C3) < Low(C1))
@@ -1585,7 +1588,15 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             break;
          }
 
-         setup.entryPrice = setup.m5FVG.midpoint;
+         // A shallower retrace level is filled more often than the midpoint while
+         // remaining inside the FVG. "Depth" is measured from the impulse side:
+         // buy orders use the upper portion and sell orders the lower portion.
+         // Clamp malformed tester input to a valid range.
+         double entryPercent = MathMax(0.0, MathMin(100.0, SMC_FVG_EntryPercent));
+         double fvgRange = setup.m5FVG.top - setup.m5FVG.bottom;
+         setup.entryPrice = (setup.direction == SIGNAL_BUY)
+                            ? setup.m5FVG.bottom + fvgRange * entryPercent / 100.0
+                            : setup.m5FVG.top - fvgRange * entryPercent / 100.0;
 
          // Calculate Structural SL (pure invalidation level of setup)
          if(setup.direction == SIGNAL_BUY)
@@ -1635,6 +1646,15 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             }
          }
 
+         double rewardDistance = MathAbs(setup.tpPrice - setup.entryPrice);
+         if(setup.stopDistance <= 0 || rewardDistance / setup.stopDistance < SMC_Min_RewardRisk)
+         {
+            InvalidateSetup(setup, StringFormat("Structural target reward/risk %.2f is below minimum %.2f",
+                                                 setup.stopDistance > 0 ? rewardDistance / setup.stopDistance : 0.0,
+                                                 SMC_Min_RewardRisk));
+            break;
+         }
+
          // Supporting OB
          FindM5OrderBlock(symbol, setup.direction, setup.m5OB);
 
@@ -1643,13 +1663,13 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          if(setup.direction == SIGNAL_BUY && completedPrice <= setup.entryPrice)
          {
             g_SMCCounters.noChaseTriggered++;
-            InvalidateSetup(setup, "NO CHASE: Price already passed through 50% FVG midpoint before order creation");
+            InvalidateSetup(setup, "NO CHASE: Price already passed through configured FVG entry before order creation");
             break;
          }
          if(setup.direction == SIGNAL_SELL && completedPrice >= setup.entryPrice)
          {
             g_SMCCounters.noChaseTriggered++;
-            InvalidateSetup(setup, "NO CHASE: Price already passed through 50% FVG midpoint before order creation");
+            InvalidateSetup(setup, "NO CHASE: Price already passed through configured FVG entry before order creation");
             break;
          }
 

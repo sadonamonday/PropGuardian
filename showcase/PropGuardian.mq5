@@ -213,8 +213,6 @@ void OnTimer()
                      g_pendingOrderExpiryTime           = request.expiration;
                      g_SMCSetups[setupIdx].orderTicket  = result.order;
                      g_SMCSetups[setupIdx].state        = SMC_ENTRY_SUBMITTED;
-                     g_riskState.tradesToday++;
-
                      SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "ENTRY_ORDER_CREATED",
                             StringFormat("%s Limit at %.5f, SL %.5f, TP %.5f, Lots %.2f",
                                          signal.type == SIGNAL_BUY ? "BUY" : "SELL",
@@ -264,6 +262,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          if(dealOrder == (long)g_pendingOrderTicket && dealEntry == DEAL_ENTRY_IN)
          {
             g_SMCCounters.retraceReached++;
+            // Count actual fills, not submitted orders. A cancelled limit must not
+            // consume the day's trade allowance and suppress later valid setups.
+            g_riskState.tradesToday++;
             long positionId = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
 
             if(positionId > 0 && PositionSelectByTicket((ulong)positionId))

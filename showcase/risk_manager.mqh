@@ -16,7 +16,7 @@
 // Input parameter declarations for risk management
 #ifndef RISK_PARAMS_DEFINED
 #define RISK_PARAMS_DEFINED
-input int    Max_Trades_Per_Day       = 1;      // Max allowed trades per day
+input int    Max_Trades_Per_Day       = 2;      // Max filled trades allowed per day
 input int    Max_Consecutive_Losses   = 3;      // Max consecutive losses before circuit breaker
 input int    Circuit_Breaker_Cooldown_Days = 5; // Cooldown days after circuit breaker tripped
 input int    Max_Open_Positions       = 1;      // Max simultaneous open positions
