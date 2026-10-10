@@ -1519,5 +1519,105 @@ class TestSMCStateMachineAudits(unittest.TestCase):
         self.assertFalse(is_confirmed, "Forming bar 0 must never be used for CHoCH confirmation")
 
 
+class TestPendingOrderInvalidationCancellation(unittest.TestCase):
+
+    def setUp(self):
+        self.pending_order_ticket = 1001
+        self.pending_order_expiry_time = 1000000
+        self.smc_setups = [
+            {
+                'orderTicket': 1001,
+                'state': 'SMC_ENTRY_SUBMITTED',
+                'invalidationReason': ''
+            }
+        ]
+
+    def _simulate_on_timer(self, current_time, order_state='ORDER_STATE_PLACED', cancel_retcode=10009):
+        """
+        Simulates OnTimer logic for pending order cancellation in PropGuardian.mq5.
+        Returns dict with resulting pending order state, logs, and action taken.
+        """
+        logs = []
+        pending_ticket = self.pending_order_ticket
+        pending_expiry = self.pending_order_expiry_time
+
+        if pending_ticket > 0:
+            setup_invalidated = False
+            invalidation_reason = ""
+
+            for setup in self.smc_setups:
+                if setup['orderTicket'] == pending_ticket and setup['state'] == 'SMC_INVALIDATED':
+                    setup_invalidated = True
+                    invalidation_reason = setup['invalidationReason']
+                    break
+
+            expired = (current_time >= pending_expiry)
+
+            if setup_invalidated or expired:
+                # Simulate OrderSelect + ORDER_STATE check
+                if order_state in ('ORDER_STATE_PLACED', 'ORDER_STATE_PARTIAL'):
+                    # Simulate OrderSend TRADE_ACTION_REMOVE
+                    if cancel_retcode in (10009, 10008): # TRADE_RETCODE_DONE or TRADE_RETCODE_PLACED
+                        if setup_invalidated:
+                            logs.append(f"[PENDING] Cancelled pending order #{pending_ticket} due to setup invalidation ({invalidation_reason})")
+                        else:
+                            logs.append(f"[PENDING] Manually cancelled expired order #{pending_ticket}")
+                        pending_ticket = 0
+                        pending_expiry = 0
+                    else:
+                        logs.append(f"[ERROR] Failed to cancel pending order #{pending_ticket}: retcode {cancel_retcode}")
+                else:
+                    logs.append(f"[INFO] Order #{pending_ticket} in state {order_state}, not cancellable as pending")
+
+        return {
+            'pending_ticket': pending_ticket,
+            'pending_expiry': pending_expiry,
+            'logs': logs
+        }
+
+    def test_invalidated_setup_cancellation(self):
+        # 1. Invalidated setup pending order cancelled promptly without waiting for expiry
+        current_time = 500000 # Well before expiry (1000000)
+        self.smc_setups[0]['state'] = 'SMC_INVALIDATED'
+        self.smc_setups[0]['invalidationReason'] = 'M5 FVG invalidated by candle body close'
+
+        res = self._simulate_on_timer(current_time)
+        self.assertEqual(res['pending_ticket'], 0)
+        self.assertEqual(res['pending_expiry'], 0)
+        self.assertTrue(any("Cancelled pending order #1001 due to setup invalidation" in log for log in res['logs']))
+
+    def test_valid_pending_order_preservation(self):
+        # 2. Valid setup pending order preserved before expiry
+        current_time = 500000 # Well before expiry
+        self.smc_setups[0]['state'] = 'SMC_ENTRY_SUBMITTED'
+
+        res = self._simulate_on_timer(current_time)
+        self.assertEqual(res['pending_ticket'], 1001)
+        self.assertEqual(res['pending_expiry'], 1000000)
+        self.assertEqual(len(res['logs']), 0)
+
+    def test_broker_cancellation_failure_preserves_ticket(self):
+        # 3. Broker cancellation failure preserves order tracking and retries
+        current_time = 500000
+        self.smc_setups[0]['state'] = 'SMC_INVALIDATED'
+        self.smc_setups[0]['invalidationReason'] = 'M5 FVG invalidated'
+
+        # Broker returns error retcode (e.g. 10013 TRADE_RETCODE_INVALID_REQUEST or 10006 TRADE_RETCODE_REJECT)
+        res = self._simulate_on_timer(current_time, cancel_retcode=10013)
+        self.assertEqual(res['pending_ticket'], 1001) # Ticket NOT cleared!
+        self.assertEqual(res['pending_expiry'], 1000000)
+        self.assertTrue(any("[ERROR] Failed to cancel pending order #1001" in log for log in res['logs']))
+
+    def test_fill_cancellation_race_handling(self):
+        # 4. Fill/cancellation race: order in ORDER_STATE_FILLED is NOT treated as cancellable pending order
+        current_time = 500000
+        self.smc_setups[0]['state'] = 'SMC_INVALIDATED'
+        self.smc_setups[0]['invalidationReason'] = 'Setup invalidated'
+
+        res = self._simulate_on_timer(current_time, order_state='ORDER_STATE_FILLED')
+        self.assertEqual(res['pending_ticket'], 1001) # Not cancelled as pending order
+        self.assertTrue(any("Order #1001 in state ORDER_STATE_FILLED, not cancellable" in log for log in res['logs']))
+
+
 if __name__ == "__main__":
     unittest.main()
