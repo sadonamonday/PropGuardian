@@ -168,6 +168,42 @@ string SMCStateToString(ENUM_SMC_STATE state)
    return "UNKNOWN";
 }
 
+// --- Global Diagnostic Counters ---
+
+struct SMCDiagnosticCounters
+{
+   int poiDetected;
+   int poiActivated;
+   int sweepDetected;
+   int chochCandidateFound;
+   int chochConfirmed;
+   int chochRejected;
+   int m5Confirmed;
+   int fvgDetected;
+   int fvgInvalidated;
+   int retraceReached;
+   int noChaseTriggered;
+   int orderSubmitted;
+   int orderAccepted;
+   int orderRejected;
+   int orderExpired;
+   int tradeClosed;
+};
+
+static SMCDiagnosticCounters g_SMCCounters;
+
+void PrintDiagnosticCountersReport()
+{
+   PrintFormat("[SMC_DIAGNOSTIC] --- Funnel Diagnostic Report ---");
+   PrintFormat("[SMC_DIAGNOSTIC] POIs Detected: %d | Activated: %d", g_SMCCounters.poiDetected, g_SMCCounters.poiActivated);
+   PrintFormat("[SMC_DIAGNOSTIC] Sweeps Detected: %d", g_SMCCounters.sweepDetected);
+   PrintFormat("[SMC_DIAGNOSTIC] CHoCH Candidates: %d | Confirmed: %d | Rejected/Invalidated: %d", g_SMCCounters.chochCandidateFound, g_SMCCounters.chochConfirmed, g_SMCCounters.chochRejected);
+   PrintFormat("[SMC_DIAGNOSTIC] M5 Confirmed: %d | FVGs Detected: %d | FVGs Invalidated: %d", g_SMCCounters.m5Confirmed, g_SMCCounters.fvgDetected, g_SMCCounters.fvgInvalidated);
+   PrintFormat("[SMC_DIAGNOSTIC] Retrace Reached: %d | No Chase Triggered: %d", g_SMCCounters.retraceReached, g_SMCCounters.noChaseTriggered);
+   PrintFormat("[SMC_DIAGNOSTIC] Orders Submitted: %d | Accepted: %d | Rejected: %d | Expired: %d", g_SMCCounters.orderSubmitted, g_SMCCounters.orderAccepted, g_SMCCounters.orderRejected, g_SMCCounters.orderExpired);
+   PrintFormat("[SMC_DIAGNOSTIC] Trades Closed: %d", g_SMCCounters.tradeClosed);
+}
+
 // --- Global Strategy State ---
 
 static SMCSetup g_SMCSetups[];
@@ -289,6 +325,17 @@ bool FindNextOpposingTargetHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookba
 
    int startBar = (tf == PERIOD_M5) ? 2 : 3;
 
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   long spreadPoints = SymbolInfoInteger(symbol, SYMBOL_SPREAD);
+   long stopLevelPoints = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDistance = MathMax((double)spreadPoints, (double)stopLevelPoints) * point;
+   if(minDistance <= 0)
+   {
+      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      double pipSize = point * ((digits == 3 || digits == 5) ? 10.0 : 1.0);
+      minDistance = 2.0 * pipSize;
+   }
+
    for(int i = startBar; i <= maxLookbackBars; i++)
    {
       SMCSwing swing;
@@ -297,7 +344,7 @@ bool FindNextOpposingTargetHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookba
                    : Get5BarSwingHigh(symbol, tf, i, swing);
       if(found)
       {
-         if(swing.price > entryPrice)
+         if(swing.price >= entryPrice + minDistance)
          {
             outSwing = swing;
             return true;
@@ -314,6 +361,17 @@ bool FindNextOpposingTargetLow(string symbol, ENUM_TIMEFRAMES tf, int maxLookbac
 
    int startBar = (tf == PERIOD_M5) ? 2 : 3;
 
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   long spreadPoints = SymbolInfoInteger(symbol, SYMBOL_SPREAD);
+   long stopLevelPoints = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDistance = MathMax((double)spreadPoints, (double)stopLevelPoints) * point;
+   if(minDistance <= 0)
+   {
+      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      double pipSize = point * ((digits == 3 || digits == 5) ? 10.0 : 1.0);
+      minDistance = 2.0 * pipSize;
+   }
+
    for(int i = startBar; i <= maxLookbackBars; i++)
    {
       SMCSwing swing;
@@ -322,7 +380,7 @@ bool FindNextOpposingTargetLow(string symbol, ENUM_TIMEFRAMES tf, int maxLookbac
                    : Get5BarSwingLow(symbol, tf, i, swing);
       if(found)
       {
-         if(swing.price < entryPrice)
+         if(swing.price <= entryPrice - minDistance)
          {
             outSwing = swing;
             return true;
@@ -828,6 +886,7 @@ bool GetActive4HPOI(string symbol, SMCPOI &outPOI)
    if(newestTime > 0)
    {
       outPOI = newestPOI;
+      g_SMCCounters.poiDetected++;
       return true;
    }
 
@@ -888,6 +947,7 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
          if(low1 < m15Low.price && close1 > m15Low.price)
          {
             outSweptSwing = m15Low;
+            g_SMCCounters.sweepDetected++;
             SMCLog("", symbol, "SWEEP_DETECTED",
                    StringFormat("BUY Sweep Detected | CandleBar1Time=%s | Low1=%.5f | Close1=%.5f | SweptSwingTime=%s | SweptSwingPrice=%.5f",
                                 TimeToString(m15Bar1Time, TIME_DATE|TIME_MINUTES), low1, close1,
@@ -907,6 +967,7 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
          if(high1 > m15High.price && close1 < m15High.price)
          {
             outSweptSwing = m15High;
+            g_SMCCounters.sweepDetected++;
             SMCLog("", symbol, "SWEEP_DETECTED",
                    StringFormat("SELL Sweep Detected | CandleBar1Time=%s | High1=%.5f | Close1=%.5f | SweptSwingTime=%s | SweptSwingPrice=%.5f",
                                 TimeToString(m15Bar1Time, TIME_DATE|TIME_MINUTES), high1, close1,
@@ -1372,6 +1433,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
          if(IsPriceIn4HPOI(symbol, setup.poi4H))
          {
+            g_SMCCounters.poiActivated++;
             setup.state = SMC_WAITING_FOR_M15_SWEEP;
          }
          break;
@@ -1402,6 +1464,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          SMCSwing chochSwing;
          if(FindCHoCHLevel(symbol, setup.direction, setup.sweepTime, chochSwing))
          {
+            g_SMCCounters.chochCandidateFound++;
             setup.m15ChochSwing = chochSwing;
             setup.chochPrice    = chochSwing.price;
             setup.lastEvaluatedM15ChochTime = setup.sweepTime; // Initialize with sweep candle time so it is not re-evaluated as CHoCH confirmation
@@ -1412,6 +1475,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          }
          else
          {
+            g_SMCCounters.chochRejected++;
             // Invalidate strictly because no structural candidate exists prior to sweep
             InvalidateSetup(setup, "No valid structural M15 swing candidate found for CHoCH prior to sweep");
          }
@@ -1459,6 +1523,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
             if(CheckM15CHoCH(symbol, setup.direction, setup.m15ChochSwing, true))
             {
+               g_SMCCounters.chochConfirmed++;
                setup.chochTime = m15Bar1Time;
                setup.state     = SMC_M15_CHOCH_CONFIRMED;
                SMCLog(setup.setupID, symbol, "CHOCH_CONFIRMED",
@@ -1489,6 +1554,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          SMCFVG fvg;
          if(CheckM5DisplacementAndFVG(symbol, setup.direction, m5Swing, fvg))
          {
+            g_SMCCounters.m5Confirmed++;
             setup.m5FVG = fvg;
             setup.state = SMC_M5_CONFIRMATION;
          }
@@ -1499,10 +1565,12 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
       {
          if(setup.m5FVG.isValid && !IsFVGInvalidated(symbol, setup.m5FVG))
          {
+            g_SMCCounters.fvgDetected++;
             setup.state = SMC_FVG_DETECTED;
          }
          else
          {
+            g_SMCCounters.fvgInvalidated++;
             InvalidateSetup(setup, "M5 FVG invalid or invalidated");
          }
          break;
@@ -1512,6 +1580,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
       {
          if(!setup.m5FVG.isValid || IsFVGInvalidated(symbol, setup.m5FVG))
          {
+            g_SMCCounters.fvgInvalidated++;
             InvalidateSetup(setup, "M5 FVG invalid or invalidated before entry calculation");
             break;
          }
@@ -1573,11 +1642,13 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          double completedPrice = iClose(symbol, SMC_M5_Timeframe, 1);
          if(setup.direction == SIGNAL_BUY && completedPrice <= setup.entryPrice)
          {
+            g_SMCCounters.noChaseTriggered++;
             InvalidateSetup(setup, "NO CHASE: Price already passed through 50% FVG midpoint before order creation");
             break;
          }
          if(setup.direction == SIGNAL_SELL && completedPrice >= setup.entryPrice)
          {
+            g_SMCCounters.noChaseTriggered++;
             InvalidateSetup(setup, "NO CHASE: Price already passed through 50% FVG midpoint before order creation");
             break;
          }
@@ -1592,6 +1663,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          // Check FVG invalidation while waiting for order execution or retrace
          if(IsFVGInvalidated(symbol, setup.m5FVG))
          {
+            g_SMCCounters.fvgInvalidated++;
             InvalidateSetup(setup, "M5 FVG invalidated by candle body close");
             break;
          }
