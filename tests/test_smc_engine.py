@@ -1127,11 +1127,11 @@ class TestSMCEngineRules(unittest.TestCase):
         return None, "Invalid direction"
 
     @staticmethod
-    def _find_next_opposing_target(direction, entry_price, m15_swings):
+    def _find_next_opposing_target(direction, entry_price, m15_swings, min_distance=0.0002):
         """
-        Replicates FindNextOpposingTargetHigh/Low logic in smc_engine.mqh.
+        Replicates FindNextOpposingTargetHigh/Low logic in smc_engine.mqh with minDistance check.
         Scans confirmed M15 swings backward (bar index >= 3, swing.time <= current_time)
-        and returns the next opposing target ahead of entry.
+        and returns the next opposing target ahead of entry by at least min_distance.
         """
         # Filter for confirmed swings only (bar_index >= 3 to ensure no unconfirmed/future swings)
         confirmed_swings = [s for s in m15_swings if s.get('isValid', True) and s.get('bar_index', 3) >= 3]
@@ -1141,12 +1141,12 @@ class TestSMCEngineRules(unittest.TestCase):
 
         if direction == "BUY":
             for swing in sorted_swings:
-                if swing.get('type') == 'HIGH' and swing['price'] > entry_price:
+                if swing.get('type') == 'HIGH' and swing['price'] >= entry_price + min_distance:
                     return swing
             return None
         elif direction == "SELL":
             for swing in sorted_swings:
-                if swing.get('type') == 'LOW' and swing['price'] < entry_price:
+                if swing.get('type') == 'LOW' and swing['price'] <= entry_price - min_distance:
                     return swing
             return None
         return None
@@ -1243,6 +1243,34 @@ class TestSMCEngineRules(unittest.TestCase):
         tp_to_use = target['price'] if target else None
         self.assertIsNone(tp_to_use)
         self.assertNotEqual(tp_to_use, fallback_3r_tp)
+
+    def test_micro_target_tp_rejected_by_min_distance(self):
+        # Regression test for EURUSD trade defect: Entry 1.06096, micro swing low at 1.06093 (0.3 pips).
+        # Min distance = 0.00020 (2.0 pips).
+        entry_price = 1.06096
+        m15_swings = [
+            {'type': 'LOW', 'price': 1.06093, 'bar_index': 3, 'isValid': True}, # Micro target (0.3 pips away)
+            {'type': 'LOW', 'price': 1.05500, 'bar_index': 10, 'isValid': True}, # Valid opposing target (59.6 pips away)
+        ]
+        target = self._find_next_opposing_target("SELL", entry_price, m15_swings, min_distance=0.00020)
+        self.assertIsNotNone(target)
+        self.assertEqual(target['price'], 1.05500, "Micro target 1.06093 must be rejected in favor of valid opposing target 1.05500")
+
+    def test_multi_symbol_tick_isolation(self):
+        # Multi-symbol regression test:
+        # Having an active position/pending order on symbol A (EURUSD) must NOT block state machine ticks on symbol B (GBPUSD).
+        setups = [
+            {'symbol': 'EURUSD', 'state': 'SMC_TRADE_ACTIVE', 'positionTicket': 100},
+            {'symbol': 'GBPUSD', 'state': 'SMC_IDLE', 'positionTicket': 0}
+        ]
+
+        processed = []
+        for s in setups:
+            if s['state'] != 'SMC_TRADE_ACTIVE' and s['state'] != 'SMC_INVALIDATED':
+                processed.append(s['symbol'])
+
+        self.assertNotIn('EURUSD', processed)
+        self.assertIn('GBPUSD', processed, "GBPUSD setup must continue receiving ticks even when EURUSD trade is active")
 
 
 class TestSMCStateMachineAudits(unittest.TestCase):

@@ -42,6 +42,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   PrintDiagnosticCountersReport();
    ReleaseSignalEngineHandles();
    ReleaseSafetyFilterHandles();
 }
@@ -51,10 +52,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   if(g_tracker.ticket == 0 && g_pendingOrderTicket == 0)
-   {
-      SMCEngine_OnTick();
-   }
+   SMCEngine_OnTick();
 }
 
 //+------------------------------------------------------------------+
@@ -214,10 +212,12 @@ void OnTimer()
                request.type_time    = ORDER_TIME_SPECIFIED;
                request.expiration   = TimeCurrent() + (Pending_Order_Expiry_Bars * PeriodSeconds(PERIOD_H1));
 
+               g_SMCCounters.orderSubmitted++;
                if(OrderSend(request, result))
                {
                   if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
                   {
+                     g_SMCCounters.orderAccepted++;
                      g_pendingOrderTicket               = result.order;
                      g_pendingOrderExpiryTime           = request.expiration;
                      g_SMCSetups[setupIdx].orderTicket  = result.order;
@@ -232,12 +232,14 @@ void OnTimer()
                   }
                   else
                   {
+                     g_SMCCounters.orderRejected++;
                      PrintFormat("[ERROR] Pending OrderSend failed for %s: retcode %d", symbol, result.retcode);
                      InvalidateSetup(g_SMCSetups[setupIdx], StringFormat("OrderSend failed retcode %d", result.retcode));
                   }
                }
                else
                {
+                  g_SMCCounters.orderRejected++;
                   PrintFormat("[ERROR] Pending OrderSend execution error for %s: retcode %d", symbol, result.retcode);
                   InvalidateSetup(g_SMCSetups[setupIdx], StringFormat("OrderSend execution error retcode %d", result.retcode));
                }
@@ -270,6 +272,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
          if(dealOrder == (long)g_pendingOrderTicket && dealEntry == DEAL_ENTRY_IN)
          {
+            g_SMCCounters.retraceReached++;
             long positionId = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
 
             if(positionId > 0 && PositionSelectByTicket((ulong)positionId))
@@ -308,6 +311,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    {
       if(trans.order == g_pendingOrderTicket)
       {
+         g_SMCCounters.orderExpired++;
          PrintFormat("[PENDING] Order #%d removed without filling (expired/cancelled)", g_pendingOrderTicket);
 
          for(int s = 0; s < ArraySize(g_SMCSetups); s++)
@@ -371,6 +375,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                   g_riskState.circuitBreakerResetTime = TimeCurrent() + (Circuit_Breaker_Cooldown_Days * 86400);
             }
 
+            g_SMCCounters.tradeClosed++;
             for(int s = 0; s < ArraySize(g_SMCSetups); s++)
             {
                if(g_SMCSetups[s].positionTicket == g_tracker.ticket)
