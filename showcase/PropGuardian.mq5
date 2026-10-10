@@ -98,71 +98,62 @@ void OnTimer()
    }
    else if(g_pendingOrderTicket > 0)
    {
-      // 4. A pending order is active. Safety-net expiry check in case the
-      // broker doesn't auto-cancel on ORDER_TIME_SPECIFIED.
-      if(TimeCurrent() >= g_pendingOrderExpiryTime)
-      {
-         bool clearPending = true;
+      // 4. A pending order is active. Check setup invalidation or safety-net expiry.
+      bool setupInvalidated = false;
+      string invalidationReason = "";
 
+      for(int s = 0; s < ArraySize(g_SMCSetups); s++)
+      {
+         if(g_SMCSetups[s].orderTicket == g_pendingOrderTicket && g_SMCSetups[s].state == SMC_INVALIDATED)
+         {
+            setupInvalidated = true;
+            invalidationReason = g_SMCSetups[s].invalidationReason;
+            break;
+         }
+      }
+
+      bool expired = (TimeCurrent() >= g_pendingOrderExpiryTime);
+
+      if(setupInvalidated || expired)
+      {
          if(OrderSelect(g_pendingOrderTicket))
          {
-            MqlTradeRequest delRequest;
-            MqlTradeResult  delResult;
-            ZeroMemory(delRequest);
-            ZeroMemory(delResult);
-            delRequest.action = TRADE_ACTION_REMOVE;
-            delRequest.order  = g_pendingOrderTicket;
-
-            if(OrderSend(delRequest, delResult) && delResult.retcode == TRADE_RETCODE_DONE)
+            ENUM_ORDER_STATE orderState = (ENUM_ORDER_STATE)OrderGetInteger(ORDER_STATE);
+            if(orderState == ORDER_STATE_PLACED || orderState == ORDER_STATE_PARTIAL)
             {
-               PrintFormat("[PENDING] Manually cancelled expired order #%d", g_pendingOrderTicket);
-            }
-            else
-            {
-               // Cancel failed: keep tracking the order and retry on the next timer tick
-               PrintFormat("[ERROR] Failed to cancel expired order #%d: retcode %d",
-                           g_pendingOrderTicket, delResult.retcode);
-               clearPending = false;
-            }
-         }
+               MqlTradeRequest delRequest;
+               MqlTradeResult  delResult;
+               ZeroMemory(delRequest);
+               ZeroMemory(delResult);
+               delRequest.action = TRADE_ACTION_REMOVE;
+               delRequest.order  = g_pendingOrderTicket;
 
-         if(clearPending)
-         {
-            g_pendingOrderTicket     = 0;
-            g_pendingOrderExpiryTime = 0;
+               if(OrderSend(delRequest, delResult) &&
+                  (delResult.retcode == TRADE_RETCODE_DONE || delResult.retcode == TRADE_RETCODE_PLACED))
+               {
+                  if(setupInvalidated)
+                  {
+                     PrintFormat("[PENDING] Cancelled pending order #%d due to setup invalidation (%s)",
+                                 g_pendingOrderTicket, invalidationReason);
+                  }
+                  else
+                  {
+                     PrintFormat("[PENDING] Manually cancelled expired order #%d", g_pendingOrderTicket);
+                  }
+                  g_pendingOrderTicket     = 0;
+                  g_pendingOrderExpiryTime = 0;
+               }
+               else
+               {
+                  PrintFormat("[ERROR] Failed to cancel pending order #%d (invalidated: %s, expired: %s): retcode %d",
+                              g_pendingOrderTicket, setupInvalidated ? "YES" : "NO", expired ? "YES" : "NO", delResult.retcode);
+               }
+            }
          }
       }
    }
    else
    {
-      // 5. Check pending limit order cancellation if setup was invalidated
-      if(g_pendingOrderTicket > 0)
-      {
-         for(int s = 0; s < ArraySize(g_SMCSetups); s++)
-         {
-            if(g_SMCSetups[s].orderTicket == g_pendingOrderTicket && g_SMCSetups[s].state == SMC_INVALIDATED)
-            {
-               if(OrderSelect(g_pendingOrderTicket))
-               {
-                  MqlTradeRequest delRequest;
-                  MqlTradeResult  delResult;
-                  ZeroMemory(delRequest);
-                  ZeroMemory(delResult);
-                  delRequest.action = TRADE_ACTION_REMOVE;
-                  delRequest.order  = g_pendingOrderTicket;
-                  if(OrderSend(delRequest, delResult) && delResult.retcode == TRADE_RETCODE_DONE)
-                  {
-                     PrintFormat("[PENDING] Cancelled pending order #%d due to setup invalidation (%s)",
-                                 g_pendingOrderTicket, g_SMCSetups[s].invalidationReason);
-                  }
-               }
-               g_pendingOrderTicket     = 0;
-               g_pendingOrderExpiryTime = 0;
-               break;
-            }
-         }
-      }
-
       for(int i = 0; i < 5; i++)
       {
          string symbol = TradeableSymbols[i];
