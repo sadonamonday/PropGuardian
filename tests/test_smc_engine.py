@@ -1713,6 +1713,21 @@ class TestPendingOrderInvalidationCancellation(unittest.TestCase):
         rejected = fvg_range < multiple * spread
         self.assertTrue(rejected)
 
+    def test_invalidate_after_choch(self):
+        # Post-CHoCH sweep invalidation check:
+        sweep_price = 1.0950 # BUY setup
+        m15_low = 1.0940 # Price traded below sweep price
+
+        # When SMC_InvalidateAfterCHoCH is False (default):
+        invalidate_after_choch = False
+        should_invalidate = invalidate_after_choch and (m15_low < sweep_price)
+        self.assertFalse(should_invalidate)
+
+        # When SMC_InvalidateAfterCHoCH is True:
+        invalidate_after_choch = True
+        should_invalidate = invalidate_after_choch and (m15_low < sweep_price)
+        self.assertTrue(should_invalidate)
+
 
 if __name__ == "__main__":
     unittest.main()

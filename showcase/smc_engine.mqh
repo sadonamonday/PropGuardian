@@ -33,6 +33,7 @@ input bool              SMC_SpreadAwareEntry     = true;         // Adjust limit
 input double            SMC_MinFVGSpreadMultiple = 0.0;          // Min FVG range as multiple of spread (0 = off)
 input bool              SMC_SL_SpreadBuffer      = false;        // Add spread buffer to structural SL
 input double            SMC_SL_ATRBuffer         = 0.0;          // Add ATR(M15,14) multiplier buffer to structural SL
+input bool              SMC_InvalidateAfterCHoCH = false;        // Invalidate setup if price trades through sweep price after CHoCH confirmed
 
 // --- Enums ---
 
@@ -204,6 +205,7 @@ struct SMCDiagnosticCounters
    int expiredWaitingSweep;
    int expiredWaitingM5;
    int poiRevalidationFailed;
+   int invalidatedAfterCHoCH;
 };
 
 static SMCDiagnosticCounters g_SMCCounters;
@@ -218,6 +220,7 @@ void PrintDiagnosticCountersReport()
    PrintFormat("[SMC_DIAGNOSTIC] Retrace Reached: %d | No Chase Triggered: %d", g_SMCCounters.retraceReached, g_SMCCounters.noChaseTriggered);
    PrintFormat("[SMC_DIAGNOSTIC] Orders Submitted: %d | Accepted: %d | Rejected: %d | Expired: %d", g_SMCCounters.orderSubmitted, g_SMCCounters.orderAccepted, g_SMCCounters.orderRejected, g_SMCCounters.orderExpired);
    PrintFormat("[SMC_DIAGNOSTIC] Trades Closed: %d", g_SMCCounters.tradeClosed);
+   PrintFormat("[SMC_DIAGNOSTIC] Invalidated After CHoCH: %d", g_SMCCounters.invalidatedAfterCHoCH);
    PrintFormat("[SMC_DIAGNOSTIC] Expired Waiting Sweep: %d | Expired Waiting M5: %d | POI Revalidation Failed: %d", g_SMCCounters.expiredWaitingSweep, g_SMCCounters.expiredWaitingM5, g_SMCCounters.poiRevalidationFailed);
 }
 
@@ -1791,19 +1794,24 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             }
          }
 
-         // Post-CHoCH sweep price invalidation check
-         double slCheckPrice = GetBufferedSweepPrice(symbol, setup);
-         double m15Low1  = iLow(symbol, SMC_M15_Timeframe, 1);
-         double m15High1 = iHigh(symbol, SMC_M15_Timeframe, 1);
-         if(setup.direction == SIGNAL_BUY && m15Low1 < slCheckPrice)
+         // Post-CHoCH sweep price invalidation check (gated by SMC_InvalidateAfterCHoCH)
+         if(SMC_InvalidateAfterCHoCH)
          {
-            InvalidateSetup(setup, "Sweep price invalidated after CHoCH confirmed");
-            break;
-         }
-         else if(setup.direction == SIGNAL_SELL && m15High1 > slCheckPrice)
-         {
-            InvalidateSetup(setup, "Sweep price invalidated after CHoCH confirmed");
-            break;
+            double slCheckPrice = GetBufferedSweepPrice(symbol, setup);
+            double m15Low1  = iLow(symbol, SMC_M15_Timeframe, 1);
+            double m15High1 = iHigh(symbol, SMC_M15_Timeframe, 1);
+            if(setup.direction == SIGNAL_BUY && m15Low1 < slCheckPrice)
+            {
+               g_SMCCounters.invalidatedAfterCHoCH++;
+               InvalidateSetup(setup, "Sweep price invalidated after CHoCH confirmed");
+               break;
+            }
+            else if(setup.direction == SIGNAL_SELL && m15High1 > slCheckPrice)
+            {
+               g_SMCCounters.invalidatedAfterCHoCH++;
+               InvalidateSetup(setup, "Sweep price invalidated after CHoCH confirmed");
+               break;
+            }
          }
 
          SMCSwing m5Swing;
