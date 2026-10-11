@@ -151,6 +151,7 @@ struct SMCSetup
    ulong              positionTicket; // Active position ticket
 
    datetime           createdTime;
+   datetime           stateEnteredTime; // Timestamp when current state was entered
    datetime           lastUpdatedTime;
    datetime           deferredStartTime; // Timestamp when pre-trade risk gate first deferred execution
    string             invalidationReason;
@@ -1527,10 +1528,23 @@ bool Is4HPOIViolated(string symbol, const SMCPOI &poi)
 double GetBufferedSweepPrice(string symbol, const SMCSetup &setup)
 {
    double buffer = 0.0;
-   if(SMC_SL_SpreadBuffer)
+   if(setup.direction == SIGNAL_BUY)
    {
-      buffer += (SymbolInfoInteger(symbol, SYMBOL_SPREAD) * SymbolInfoDouble(symbol, SYMBOL_POINT));
+      if(SMC_SL_SpreadBuffer)
+      {
+         buffer += (SymbolInfoInteger(symbol, SYMBOL_SPREAD) * SymbolInfoDouble(symbol, SYMBOL_POINT));
+      }
    }
+   else // SIGNAL_SELL
+   {
+      // SMC_SpreadAwareEntry owns adding spread to SELL SL.
+      // SMC_SL_SpreadBuffer adds spread ONLY if SMC_SpreadAwareEntry is OFF.
+      if(SMC_SL_SpreadBuffer && !SMC_SpreadAwareEntry)
+      {
+         buffer += (SymbolInfoInteger(symbol, SYMBOL_SPREAD) * SymbolInfoDouble(symbol, SYMBOL_POINT));
+      }
+   }
+
    if(SMC_SL_ATRBuffer > 0.0)
    {
       buffer += SMC_SL_ATRBuffer * GetM15ATRValue(symbol);
@@ -1606,7 +1620,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
          if(SMC_MaxHoursWaitingSweep > 0)
          {
-            double hoursWaiting = (double)(now - setup.createdTime) / 3600.0;
+            double hoursWaiting = (double)(now - setup.stateEnteredTime) / 3600.0;
             if(hoursWaiting >= (double)SMC_MaxHoursWaitingSweep)
             {
                g_SMCCounters.expiredWaitingSweep++;
@@ -1642,7 +1656,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
          if(SMC_MaxHoursWaitingSweep > 0)
          {
-            double hoursWaiting = (double)(now - setup.createdTime) / 3600.0;
+            double hoursWaiting = (double)(now - setup.stateEnteredTime) / 3600.0;
             if(hoursWaiting >= (double)SMC_MaxHoursWaitingSweep)
             {
                g_SMCCounters.expiredWaitingSweep++;
@@ -1688,6 +1702,17 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_WAITING_FOR_M15_CHOCH:
       {
+         if(SMC_MaxHoursWaitingSweep > 0)
+         {
+            double hoursWaiting = (double)(now - setup.stateEnteredTime) / 3600.0;
+            if(hoursWaiting >= (double)SMC_MaxHoursWaitingSweep)
+            {
+               g_SMCCounters.expiredWaitingSweep++;
+               InvalidateSetup(setup, StringFormat("Max hours waiting for M15 CHoCH exceeded (%.1f hrs)", hoursWaiting));
+               break;
+            }
+         }
+
          datetime m15Bar1Time = iTime(symbol, SMC_M15_Timeframe, 1);
          double m15Close1     = iClose(symbol, SMC_M15_Timeframe, 1);
          double m15Low1       = iLow(symbol, SMC_M15_Timeframe, 1);
@@ -1757,8 +1782,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
       {
          if(SMC_MaxHoursWaitingM5 > 0)
          {
-            datetime refTime = (setup.chochTime > 0) ? setup.chochTime : setup.lastUpdatedTime;
-            double hoursWaiting = (double)(now - refTime) / 3600.0;
+            double hoursWaiting = (double)(now - setup.stateEnteredTime) / 3600.0;
             if(hoursWaiting >= (double)SMC_MaxHoursWaitingM5)
             {
                g_SMCCounters.expiredWaitingM5++;
@@ -1861,7 +1885,8 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
          if(setup.direction == SIGNAL_BUY)
          {
-            setup.entryPrice = SMC_SpreadAwareEntry ? (baseEntryPrice + currentSpread) : baseEntryPrice;
+            double adjustedEntry = SMC_SpreadAwareEntry ? (baseEntryPrice + currentSpread) : baseEntryPrice;
+            setup.entryPrice = MathMin(adjustedEntry, setup.m5FVG.top);
             setup.slPrice    = rawSLPrice;
             if(setup.slPrice >= setup.entryPrice)
             {
@@ -1926,15 +1951,15 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          // Supporting OB
          FindM5OrderBlock(symbol, setup.direction, setup.m5OB);
 
-         // Verify no-chase condition using confirmed completed candle (bar 1)
+         // Verify no-chase condition using confirmed completed candle (bar 1) against baseEntryPrice (bid-based)
          double completedPrice = iClose(symbol, SMC_M5_Timeframe, 1);
-         if(setup.direction == SIGNAL_BUY && completedPrice <= setup.entryPrice)
+         if(setup.direction == SIGNAL_BUY && completedPrice <= baseEntryPrice)
          {
             g_SMCCounters.noChaseTriggered++;
             InvalidateSetup(setup, "NO CHASE: Price already passed through configured FVG entry before order creation");
             break;
          }
-         if(setup.direction == SIGNAL_SELL && completedPrice >= setup.entryPrice)
+         if(setup.direction == SIGNAL_SELL && completedPrice >= baseEntryPrice)
          {
             g_SMCCounters.noChaseTriggered++;
             InvalidateSetup(setup, "NO CHASE: Price already passed through configured FVG entry before order creation");
@@ -1974,6 +1999,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
    if(setup.state != prevState)
    {
+      setup.stateEnteredTime = now;
       DrawSMCDebugObjects(setup);
       SMCLog(setup.setupID, symbol, "STATE_TRANSITION",
              StringFormat("%s -> %s", SMCStateToString(prevState), SMCStateToString(setup.state)));
@@ -2016,8 +2042,9 @@ int GetOrCreateSetupForSymbol(string symbol)
    g_SMCSetups[targetSlot].setupID       = GenerateSetupID(symbol);
    g_SMCSetups[targetSlot].symbol        = symbol;
    g_SMCSetups[targetSlot].state         = SMC_IDLE;
-   g_SMCSetups[targetSlot].createdTime   = TimeCurrent();
-   g_SMCSetups[targetSlot].lastUpdatedTime= TimeCurrent();
+   g_SMCSetups[targetSlot].createdTime     = TimeCurrent();
+   g_SMCSetups[targetSlot].stateEnteredTime= TimeCurrent();
+   g_SMCSetups[targetSlot].lastUpdatedTime = TimeCurrent();
 
    SMCLog(g_SMCSetups[targetSlot].setupID, symbol, "SETUP_CREATED", "New setup initialized");
    return targetSlot;

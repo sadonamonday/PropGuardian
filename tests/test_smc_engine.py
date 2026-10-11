@@ -1661,6 +1661,7 @@ class TestPendingOrderInvalidationCancellation(unittest.TestCase):
     def test_spread_aware_entry_and_sl_buffers(self):
         # BUY setup:
         base_entry = 1.1000
+        fvg_top = 1.1001
         sweep_low = 1.0950
         spread = 0.0002
         atr_m15 = 0.0005
@@ -1670,13 +1671,35 @@ class TestPendingOrderInvalidationCancellation(unittest.TestCase):
         buffered_sl = sweep_low - (spread + atr_mult * atr_m15) # 1.0950 - 0.00045 = 1.09455
         self.assertAlmostEqual(buffered_sl, 1.09455)
 
-        # Spread-aware BUY entry: base_entry + spread = 1.1002
-        spread_aware_entry = base_entry + spread
-        self.assertAlmostEqual(spread_aware_entry, 1.1002)
+        # Spread-aware BUY entry: base_entry + spread = 1.1002, clamped to fvg_top (1.1001)
+        spread_aware_entry = min(base_entry + spread, fvg_top)
+        self.assertEqual(spread_aware_entry, 1.1001)
 
-        # Recomputed stop distance: 1.1002 - 1.09455 = 0.00565
+        # Recomputed stop distance: 1.1001 - 1.09455 = 0.00555
         stop_dist = abs(spread_aware_entry - buffered_sl)
-        self.assertAlmostEqual(stop_dist, 0.00565, places=5)
+        self.assertAlmostEqual(stop_dist, 0.00555, places=5)
+
+    def test_no_chase_and_spread_ownership(self):
+        # BUY setup no-chase check against baseEntryPrice:
+        base_entry = 1.1000
+        completed_price = 1.1001 # Between base_entry and adjusted entry
+
+        # Completed price 1.1001 > base_entry 1.1000 -> NO CHASE is NOT triggered
+        self.assertFalse(completed_price <= base_entry)
+
+        # SELL setup spread ownership:
+        # When SpreadAwareEntry is ON, GetBufferedSweepPrice does not add spread for SELL SL
+        sweep_high = 1.1050
+        spread = 0.0002
+        atr_mult = 1.0
+        atr_m15 = 0.0003
+
+        # SpreadAwareEntry=True, SL_SpreadBuffer=True:
+        # GetBufferedSweepPrice adds ATR buffer (0.0003), but NOT spread (0.0002)
+        raw_sl_price = sweep_high + (atr_mult * atr_m15) # 1.1053
+        # FVG_DETECTED adds spread (0.0002):
+        final_sell_sl = raw_sl_price + spread # 1.1055
+        self.assertAlmostEqual(final_sell_sl, 1.1055)
 
     def test_min_fvg_spread_multiple(self):
         fvg_top = 1.1005
