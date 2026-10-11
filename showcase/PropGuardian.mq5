@@ -12,7 +12,9 @@
 #include "position_manager.mqh"
 
 // Input Parameters
-input int Magic_Number = 20260914;   // for order tagging/log filtering
+input int  Magic_Number              = 20260914; // for order tagging/log filtering
+input bool SMC_TimerOnlyRetraceState = true;     // OnTimer places pending orders only in SMC_WAITING_FOR_FVG_RETRACE state
+input int  SMC_MaxDeferMinutes       = 60;       // Max minutes setup can wait while deferred by risk gate (0 = no limit)
 
 // Global State
 RiskState       g_riskState;
@@ -159,7 +161,12 @@ void OnTimer()
          string symbol = TradeableSymbols[i];
          int setupIdx = GetOrCreateSetupForSymbol(symbol);
 
-         if(g_SMCSetups[setupIdx].state == SMC_WAITING_FOR_FVG_RETRACE || g_SMCSetups[setupIdx].state == SMC_FVG_DETECTED)
+         bool isEligibleState = SMC_TimerOnlyRetraceState
+                                ? (g_SMCSetups[setupIdx].state == SMC_WAITING_FOR_FVG_RETRACE ||
+                                  (g_SMCSetups[setupIdx].state == SMC_FVG_DETECTED && g_SMCSetups[setupIdx].stopDistance > 0.0))
+                                : (g_SMCSetups[setupIdx].state == SMC_WAITING_FOR_FVG_RETRACE || g_SMCSetups[setupIdx].state == SMC_FVG_DETECTED);
+
+         if(isEligibleState)
          {
             if(!g_SMCSetups[setupIdx].m5FVG.isValid || IsFVGInvalidated(symbol, g_SMCSetups[setupIdx].m5FVG))
             {
@@ -213,6 +220,7 @@ void OnTimer()
                      g_pendingOrderExpiryTime           = request.expiration;
                      g_SMCSetups[setupIdx].orderTicket  = result.order;
                      g_SMCSetups[setupIdx].state        = SMC_ENTRY_SUBMITTED;
+                     g_SMCSetups[setupIdx].deferredStartTime = 0;
                      SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "ENTRY_ORDER_CREATED",
                             StringFormat("%s Limit at %.5f, SL %.5f, TP %.5f, Lots %.2f",
                                          signal.type == SIGNAL_BUY ? "BUY" : "SELL",
@@ -237,6 +245,21 @@ void OnTimer()
             {
                // A session, spread, or drawdown block can be temporary. Preserve
                // the valid FVG setup and retry while it remains structurally valid.
+               if(g_SMCSetups[setupIdx].deferredStartTime == 0)
+               {
+                  g_SMCSetups[setupIdx].deferredStartTime = TimeCurrent();
+               }
+
+               if(SMC_MaxDeferMinutes > 0 && g_SMCSetups[setupIdx].deferredStartTime > 0)
+               {
+                  double minsDeferred = (double)(TimeCurrent() - g_SMCSetups[setupIdx].deferredStartTime) / 60.0;
+                  if(minsDeferred >= (double)SMC_MaxDeferMinutes)
+                  {
+                     InvalidateSetup(g_SMCSetups[setupIdx], StringFormat("Max risk gate deferral time exceeded (%.1f mins)", minsDeferred));
+                     continue;
+                  }
+               }
+
                SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "ENTRY_DEFERRED_BY_RISK",
                       "Pre-trade risk gate temporarily blocked execution; waiting while FVG remains valid");
             }
