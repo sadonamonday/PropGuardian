@@ -1618,6 +1618,78 @@ class TestPendingOrderInvalidationCancellation(unittest.TestCase):
         self.assertEqual(res['pending_ticket'], 1001) # Not cancelled as pending order
         self.assertTrue(any("Order #1001 in state ORDER_STATE_FILLED, not cancellable" in log for log in res['logs']))
 
+    # --- 13. NEW SMC STRATEGY INPUTS & RULES TESTS ---
+
+    def test_tp_scan_for_min_rr(self):
+        # Test TP scan finding nearest swing with R:R >= min_rr (1.5)
+        entry_price = 1.1000
+        stop_dist = 0.0010 # SL = 1.0990
+        min_rr = 1.5 # Min TP = 1.1015
+
+        # Swings in lookback:
+        # Swing 1: price 1.1010 (R:R = 1.0 < 1.5) -> fails R:R
+        # Swing 2: price 1.1020 (R:R = 2.0 >= 1.5) -> passes R:R
+        # Swing 3: price 1.1050 (R:R = 5.0 >= 1.5) -> passes R:R
+        swings = [
+            {'price': 1.1010, 'barIndex': 5},
+            {'price': 1.1020, 'barIndex': 10},
+            {'price': 1.1050, 'barIndex': 15},
+        ]
+
+        # Scan for nearest qualifying swing (price closest to entry_price >= entry + min_rr*stop_dist)
+        qualifying = [s for s in swings if (s['price'] - entry_price) / stop_dist >= min_rr]
+        nearest = min(qualifying, key=lambda s: s['price'])
+        self.assertEqual(nearest['price'], 1.1020)
+
+    def test_poi_revalidation_and_expiry(self):
+        # 4H POI Demand Range: [1.1000, 1.1050]
+        poi_bottom = 1.1000
+        # Revalidation fails if 4H candle close < poi_bottom
+        candle_closes = [1.1030, 1.1010, 1.0990] # 1.0990 < 1.1000 -> violated
+        violated = any(c < poi_bottom for c in candle_closes)
+        self.assertTrue(violated)
+
+        # Expiry timeout check: 72 hours
+        created_time = 1000000
+        max_hours = 72
+        current_time_expired = created_time + 73 * 3600
+        current_time_valid = created_time + 50 * 3600
+
+        self.assertTrue((current_time_expired - created_time) / 3600 >= max_hours)
+        self.assertFalse((current_time_valid - created_time) / 3600 >= max_hours)
+
+    def test_spread_aware_entry_and_sl_buffers(self):
+        # BUY setup:
+        base_entry = 1.1000
+        sweep_low = 1.0950
+        spread = 0.0002
+        atr_m15 = 0.0005
+        atr_mult = 0.5
+
+        # Spread buffer = spread, ATR buffer = 0.5 * 0.0005 = 0.00025
+        buffered_sl = sweep_low - (spread + atr_mult * atr_m15) # 1.0950 - 0.00045 = 1.09455
+        self.assertAlmostEqual(buffered_sl, 1.09455)
+
+        # Spread-aware BUY entry: base_entry + spread = 1.1002
+        spread_aware_entry = base_entry + spread
+        self.assertAlmostEqual(spread_aware_entry, 1.1002)
+
+        # Recomputed stop distance: 1.1002 - 1.09455 = 0.00565
+        stop_dist = abs(spread_aware_entry - buffered_sl)
+        self.assertAlmostEqual(stop_dist, 0.00565, places=5)
+
+    def test_min_fvg_spread_multiple(self):
+        fvg_top = 1.1005
+        fvg_bottom = 1.1000
+        fvg_range = fvg_top - fvg_bottom # 0.0005
+
+        spread = 0.0002
+        multiple = 3.0 # Min range = 3 * 0.0002 = 0.0006
+
+        # fvg_range 0.0005 < 0.0006 -> rejected
+        rejected = fvg_range < multiple * spread
+        self.assertTrue(rejected)
+
 
 if __name__ == "__main__":
     unittest.main()

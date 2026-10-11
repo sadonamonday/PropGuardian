@@ -14,17 +14,25 @@
 #property strict
 #include "signal_engine.mqh"
 // --- Timeframe Inputs & Strategy Toggles ---
-input bool              SMC_UseStrategy      = true;         // Enable PropGuardian SMC Strategy v0.1
-input ENUM_TIMEFRAMES   SMC_4H_Timeframe     = PERIOD_H4;    // Context Timeframe (4H)
-input ENUM_TIMEFRAMES   SMC_M15_Timeframe    = PERIOD_M15;   // Structural Timeframe (M15)
-input ENUM_TIMEFRAMES   SMC_M5_Timeframe     = PERIOD_M5;    // Execution Timeframe (M5)
-input double            SMC_FVG_EntryPercent = 60.0;         // FVG retrace depth; 50 = midpoint, 60 = shallower entry
-input int               SMC_M15_SwingLookback = 24;           // Recent M15 swings considered for liquidity sweeps
-input int               SMC_M5_SwingLookback  = 20;           // Recent M5 swings considered for displacement
-input double            SMC_Min_RewardRisk    = 1.5;          // Reject structural targets below this reward/risk
-input bool              SMC_DebugLogging     = true;         // Enable Structured Debug Logging
-input bool              SMC_DrawChartObjects = true;         // Enable Visual Chart Objects on MT5 Tester/Chart
-input int               SMC_MaxActiveSetups  = 5;            // Max Simultaneous Active Setups Across Symbols
+input bool              SMC_UseStrategy          = true;         // Enable PropGuardian SMC Strategy v0.1
+input ENUM_TIMEFRAMES   SMC_4H_Timeframe         = PERIOD_H4;    // Context Timeframe (4H)
+input ENUM_TIMEFRAMES   SMC_M15_Timeframe        = PERIOD_M15;   // Structural Timeframe (M15)
+input ENUM_TIMEFRAMES   SMC_M5_Timeframe         = PERIOD_M5;    // Execution Timeframe (M5)
+input double            SMC_FVG_EntryPercent     = 60.0;         // FVG retrace depth; 50 = midpoint, 60 = shallower entry
+input int               SMC_M15_SwingLookback    = 24;           // Recent M15 swings considered for liquidity sweeps
+input int               SMC_M5_SwingLookback     = 20;           // Recent M5 swings considered for displacement
+input double            SMC_Min_RewardRisk        = 1.5;          // Reject structural targets below this reward/risk
+input bool              SMC_DebugLogging         = true;         // Enable Structured Debug Logging
+input bool              SMC_DrawChartObjects     = true;         // Enable Visual Chart Objects on MT5 Tester/Chart
+input int               SMC_MaxActiveSetups      = 5;            // Max Simultaneous Active Setups Across Symbols
+input bool              SMC_TP_ScanForMinRR      = true;         // Scan M15 structural swings for nearest target meeting min R:R
+input int               SMC_MaxHoursWaitingSweep = 72;           // Max hours waiting for sweep / POI active (0 = no limit)
+input int               SMC_MaxHoursWaitingM5    = 24;           // Max hours waiting for M5 confirmation after CHoCH (0 = no limit)
+input bool              SMC_RevalidatePOI        = true;         // Re-validate 4H POI continuously in sweep waiting states
+input bool              SMC_SpreadAwareEntry     = true;         // Adjust limit order price and SL for spread
+input double            SMC_MinFVGSpreadMultiple = 0.0;          // Min FVG range as multiple of spread (0 = off)
+input bool              SMC_SL_SpreadBuffer      = false;        // Add spread buffer to structural SL
+input double            SMC_SL_ATRBuffer         = 0.0;          // Add ATR(M15,14) multiplier buffer to structural SL
 
 // --- Enums ---
 
@@ -144,6 +152,7 @@ struct SMCSetup
 
    datetime           createdTime;
    datetime           lastUpdatedTime;
+   datetime           deferredStartTime; // Timestamp when pre-trade risk gate first deferred execution
    string             invalidationReason;
 };
 
@@ -191,6 +200,9 @@ struct SMCDiagnosticCounters
    int orderRejected;
    int orderExpired;
    int tradeClosed;
+   int expiredWaitingSweep;
+   int expiredWaitingM5;
+   int poiRevalidationFailed;
 };
 
 static SMCDiagnosticCounters g_SMCCounters;
@@ -205,6 +217,7 @@ void PrintDiagnosticCountersReport()
    PrintFormat("[SMC_DIAGNOSTIC] Retrace Reached: %d | No Chase Triggered: %d", g_SMCCounters.retraceReached, g_SMCCounters.noChaseTriggered);
    PrintFormat("[SMC_DIAGNOSTIC] Orders Submitted: %d | Accepted: %d | Rejected: %d | Expired: %d", g_SMCCounters.orderSubmitted, g_SMCCounters.orderAccepted, g_SMCCounters.orderRejected, g_SMCCounters.orderExpired);
    PrintFormat("[SMC_DIAGNOSTIC] Trades Closed: %d", g_SMCCounters.tradeClosed);
+   PrintFormat("[SMC_DIAGNOSTIC] Expired Waiting Sweep: %d | Expired Waiting M5: %d | POI Revalidation Failed: %d", g_SMCCounters.expiredWaitingSweep, g_SMCCounters.expiredWaitingM5, g_SMCCounters.poiRevalidationFailed);
 }
 
 // --- Global Strategy State ---
@@ -321,7 +334,7 @@ bool Get5BarSwingHigh(string symbol, ENUM_TIMEFRAMES tf, int barIndex, SMCSwing 
 }
 
 // Search for the next valid opposing structural target ahead of entry price scanning backward
-bool FindNextOpposingTargetHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, double entryPrice, SMCSwing &outSwing)
+bool FindNextOpposingTargetHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, double entryPrice, SMCSwing &outSwing, double stopDistance = 0.0)
 {
    ZeroMemory(outSwing);
    outSwing.isValid = false;
@@ -338,6 +351,31 @@ bool FindNextOpposingTargetHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookba
       double pipSize = point * ((digits == 3 || digits == 5) ? 10.0 : 1.0);
       minDistance = 2.0 * pipSize;
    }
+
+   if(!SMC_TP_ScanForMinRR || stopDistance <= 0.0)
+   {
+      for(int i = startBar; i <= maxLookbackBars; i++)
+      {
+         SMCSwing swing;
+         bool found = (tf == PERIOD_M5)
+                      ? Get3BarSwingHigh(symbol, tf, i, swing)
+                      : Get5BarSwingHigh(symbol, tf, i, swing);
+         if(found)
+         {
+            if(swing.price >= entryPrice + minDistance)
+            {
+               outSwing = swing;
+               return true;
+            }
+         }
+      }
+      return false;
+   }
+
+   // New behavior: iterate swings and return nearest one whose reward/risk >= SMC_Min_RewardRisk
+   SMCSwing bestSwing;
+   ZeroMemory(bestSwing);
+   bestSwing.isValid = false;
 
    for(int i = startBar; i <= maxLookbackBars; i++)
    {
@@ -349,15 +387,28 @@ bool FindNextOpposingTargetHigh(string symbol, ENUM_TIMEFRAMES tf, int maxLookba
       {
          if(swing.price >= entryPrice + minDistance)
          {
-            outSwing = swing;
-            return true;
+            double rewardDistance = swing.price - entryPrice;
+            if(rewardDistance / stopDistance >= SMC_Min_RewardRisk)
+            {
+               if(!bestSwing.isValid || swing.price < bestSwing.price)
+               {
+                  bestSwing = swing;
+               }
+            }
          }
       }
    }
+
+   if(bestSwing.isValid)
+   {
+      outSwing = bestSwing;
+      return true;
+   }
+
    return false;
 }
 
-bool FindNextOpposingTargetLow(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, double entryPrice, SMCSwing &outSwing)
+bool FindNextOpposingTargetLow(string symbol, ENUM_TIMEFRAMES tf, int maxLookbackBars, double entryPrice, SMCSwing &outSwing, double stopDistance = 0.0)
 {
    ZeroMemory(outSwing);
    outSwing.isValid = false;
@@ -375,6 +426,31 @@ bool FindNextOpposingTargetLow(string symbol, ENUM_TIMEFRAMES tf, int maxLookbac
       minDistance = 2.0 * pipSize;
    }
 
+   if(!SMC_TP_ScanForMinRR || stopDistance <= 0.0)
+   {
+      for(int i = startBar; i <= maxLookbackBars; i++)
+      {
+         SMCSwing swing;
+         bool found = (tf == PERIOD_M5)
+                      ? Get3BarSwingLow(symbol, tf, i, swing)
+                      : Get5BarSwingLow(symbol, tf, i, swing);
+         if(found)
+         {
+            if(swing.price <= entryPrice - minDistance)
+            {
+               outSwing = swing;
+               return true;
+            }
+         }
+      }
+      return false;
+   }
+
+   // New behavior: iterate swings and return nearest one whose reward/risk >= SMC_Min_RewardRisk
+   SMCSwing bestSwing;
+   ZeroMemory(bestSwing);
+   bestSwing.isValid = false;
+
    for(int i = startBar; i <= maxLookbackBars; i++)
    {
       SMCSwing swing;
@@ -385,11 +461,24 @@ bool FindNextOpposingTargetLow(string symbol, ENUM_TIMEFRAMES tf, int maxLookbac
       {
          if(swing.price <= entryPrice - minDistance)
          {
-            outSwing = swing;
-            return true;
+            double rewardDistance = entryPrice - swing.price;
+            if(rewardDistance / stopDistance >= SMC_Min_RewardRisk)
+            {
+               if(!bestSwing.isValid || swing.price > bestSwing.price)
+               {
+                  bestSwing = swing;
+               }
+            }
          }
       }
    }
+
+   if(bestSwing.isValid)
+   {
+      outSwing = bestSwing;
+      return true;
+   }
+
    return false;
 }
 
@@ -1381,6 +1470,78 @@ void InvalidateSetup(SMCSetup &setup, string reason)
    SMCLog(setup.setupID, setup.symbol, "SETUP_INVALIDATED", StringFormat("Reason: %s", reason));
 }
 
+// ATR M15 Cache & Helper Functions
+static int    g_m15AtrHandles[];
+static string g_m15AtrSymbols[];
+
+int GetCachedM15ATRHandle(string symbol)
+{
+   int total = ArraySize(g_m15AtrSymbols);
+   for(int i = 0; i < total; i++)
+   {
+      if(g_m15AtrSymbols[i] == symbol)
+         return g_m15AtrHandles[i];
+   }
+   int handle = iATR(symbol, PERIOD_M15, 14);
+   if(handle != INVALID_HANDLE)
+   {
+      ArrayResize(g_m15AtrSymbols, total + 1);
+      ArrayResize(g_m15AtrHandles, total + 1);
+      g_m15AtrSymbols[total] = symbol;
+      g_m15AtrHandles[total] = handle;
+   }
+   return handle;
+}
+
+double GetM15ATRValue(string symbol)
+{
+   int handle = GetCachedM15ATRHandle(symbol);
+   if(handle == INVALID_HANDLE) return 0.0;
+   double buf[];
+   ArraySetAsSeries(buf, true);
+   if(CopyBuffer(handle, 0, 1, 1, buf) > 0)
+      return buf[0];
+   return 0.0;
+}
+
+bool Is4HPOIViolated(string symbol, const SMCPOI &poi)
+{
+   int poiBarIndex = iBarShift(symbol, SMC_4H_Timeframe, poi.time, false);
+   if(poiBarIndex > 1)
+   {
+      for(int k = poiBarIndex - 1; k >= 1; k--)
+      {
+         double cl = iClose(symbol, SMC_4H_Timeframe, k);
+         if(cl > 0)
+         {
+            if(poi.type == POI_TYPE_DEMAND && cl < poi.bottom)
+               return true;
+            if(poi.type == POI_TYPE_SUPPLY && cl > poi.top)
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
+double GetBufferedSweepPrice(string symbol, const SMCSetup &setup)
+{
+   double buffer = 0.0;
+   if(SMC_SL_SpreadBuffer)
+   {
+      buffer += (SymbolInfoInteger(symbol, SYMBOL_SPREAD) * SymbolInfoDouble(symbol, SYMBOL_POINT));
+   }
+   if(SMC_SL_ATRBuffer > 0.0)
+   {
+      buffer += SMC_SL_ATRBuffer * GetM15ATRValue(symbol);
+   }
+
+   if(setup.direction == SIGNAL_BUY)
+      return setup.sweepPrice - buffer;
+   else
+      return setup.sweepPrice + buffer;
+}
+
 // Helper: Count total active setups
 int CountActiveSetups()
 {
@@ -1428,10 +1589,30 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_H4_POI_ACTIVE:
       {
-         if(!setup.poi4H.isActive)
+         if(SMC_RevalidatePOI)
+         {
+            if(Is4HPOIViolated(symbol, setup.poi4H))
+            {
+               g_SMCCounters.poiRevalidationFailed++;
+               InvalidateSetup(setup, "4H POI revalidation failed");
+               break;
+            }
+         }
+         else if(!setup.poi4H.isActive)
          {
             InvalidateSetup(setup, "4H POI inactive");
             break;
+         }
+
+         if(SMC_MaxHoursWaitingSweep > 0)
+         {
+            double hoursWaiting = (double)(now - setup.createdTime) / 3600.0;
+            if(hoursWaiting >= (double)SMC_MaxHoursWaitingSweep)
+            {
+               g_SMCCounters.expiredWaitingSweep++;
+               InvalidateSetup(setup, StringFormat("Max hours waiting for M15 sweep exceeded (%.1f hrs)", hoursWaiting));
+               break;
+            }
          }
 
          if(IsPriceIn4HPOI(symbol, setup.poi4H))
@@ -1444,10 +1625,30 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_WAITING_FOR_M15_SWEEP:
       {
-         if(!setup.poi4H.isActive)
+         if(SMC_RevalidatePOI)
+         {
+            if(Is4HPOIViolated(symbol, setup.poi4H))
+            {
+               g_SMCCounters.poiRevalidationFailed++;
+               InvalidateSetup(setup, "4H POI revalidation failed");
+               break;
+            }
+         }
+         else if(!setup.poi4H.isActive)
          {
             InvalidateSetup(setup, "4H POI inactive");
             break;
+         }
+
+         if(SMC_MaxHoursWaitingSweep > 0)
+         {
+            double hoursWaiting = (double)(now - setup.createdTime) / 3600.0;
+            if(hoursWaiting >= (double)SMC_MaxHoursWaitingSweep)
+            {
+               g_SMCCounters.expiredWaitingSweep++;
+               InvalidateSetup(setup, StringFormat("Max hours waiting for M15 sweep exceeded (%.1f hrs)", hoursWaiting));
+               break;
+            }
          }
 
          SMCSwing sweptSwing;
@@ -1496,9 +1697,10 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             break;
 
          // Structural Invalidation Check: sweep level breached
+         double slCheckPrice = GetBufferedSweepPrice(symbol, setup);
          if(setup.direction == SIGNAL_BUY)
          {
-            if(m15Close1 < setup.sweepPrice || m15Low1 < setup.sweepPrice)
+            if(m15Close1 < slCheckPrice || m15Low1 < slCheckPrice)
             {
                InvalidateSetup(setup, "Sweep price invalidated by lower low before CHoCH confirmed");
                break;
@@ -1506,7 +1708,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          }
          else if(setup.direction == SIGNAL_SELL)
          {
-            if(m15Close1 > setup.sweepPrice || m15High1 > setup.sweepPrice)
+            if(m15Close1 > slCheckPrice || m15High1 > slCheckPrice)
             {
                InvalidateSetup(setup, "Sweep price invalidated by higher high before CHoCH confirmed");
                break;
@@ -1553,6 +1755,33 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 
       case SMC_WAITING_FOR_M5_CONFIRMATION:
       {
+         if(SMC_MaxHoursWaitingM5 > 0)
+         {
+            datetime refTime = (setup.chochTime > 0) ? setup.chochTime : setup.lastUpdatedTime;
+            double hoursWaiting = (double)(now - refTime) / 3600.0;
+            if(hoursWaiting >= (double)SMC_MaxHoursWaitingM5)
+            {
+               g_SMCCounters.expiredWaitingM5++;
+               InvalidateSetup(setup, StringFormat("Max hours waiting for M5 confirmation exceeded (%.1f hrs)", hoursWaiting));
+               break;
+            }
+         }
+
+         // Post-CHoCH sweep price invalidation check
+         double slCheckPrice = GetBufferedSweepPrice(symbol, setup);
+         double m15Low1  = iLow(symbol, SMC_M15_Timeframe, 1);
+         double m15High1 = iHigh(symbol, SMC_M15_Timeframe, 1);
+         if(setup.direction == SIGNAL_BUY && m15Low1 < slCheckPrice)
+         {
+            InvalidateSetup(setup, "Sweep price invalidated after CHoCH confirmed");
+            break;
+         }
+         else if(setup.direction == SIGNAL_SELL && m15High1 > slCheckPrice)
+         {
+            InvalidateSetup(setup, "Sweep price invalidated after CHoCH confirmed");
+            break;
+         }
+
          SMCSwing m5Swing;
          SMCFVG fvg;
          if(CheckM5DisplacementAndFVG(symbol, setup.direction, m5Swing, fvg))
@@ -1568,6 +1797,23 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
       {
          if(setup.m5FVG.isValid && !IsFVGInvalidated(symbol, setup.m5FVG))
          {
+            double fvgRange = setup.m5FVG.top - setup.m5FVG.bottom;
+            double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+            double currentSpread = SymbolInfoInteger(symbol, SYMBOL_SPREAD) * point;
+            if(currentSpread <= 0.0)
+               currentSpread = SymbolInfoDouble(symbol, SYMBOL_ASK) - SymbolInfoDouble(symbol, SYMBOL_BID);
+
+            if(SMC_MinFVGSpreadMultiple > 0.0 && currentSpread > 0.0)
+            {
+               if(fvgRange < SMC_MinFVGSpreadMultiple * currentSpread)
+               {
+                  g_SMCCounters.fvgInvalidated++;
+                  InvalidateSetup(setup, StringFormat("FVG range %.5f is smaller than %.1fx spread %.5f",
+                                                       fvgRange, SMC_MinFVGSpreadMultiple, SMC_MinFVGSpreadMultiple * currentSpread));
+                  break;
+               }
+            }
+
             g_SMCCounters.fvgDetected++;
             setup.state = SMC_FVG_DETECTED;
          }
@@ -1588,20 +1834,35 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             break;
          }
 
-         // A shallower retrace level is filled more often than the midpoint while
-         // remaining inside the FVG. "Depth" is measured from the impulse side:
-         // buy orders use the upper portion and sell orders the lower portion.
-         // Clamp malformed tester input to a valid range.
          double entryPercent = MathMax(0.0, MathMin(100.0, SMC_FVG_EntryPercent));
          double fvgRange = setup.m5FVG.top - setup.m5FVG.bottom;
-         setup.entryPrice = (setup.direction == SIGNAL_BUY)
-                            ? setup.m5FVG.bottom + fvgRange * entryPercent / 100.0
-                            : setup.m5FVG.top - fvgRange * entryPercent / 100.0;
 
-         // Calculate Structural SL (pure invalidation level of setup)
+         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+         double currentSpread = SymbolInfoInteger(symbol, SYMBOL_SPREAD) * point;
+         if(currentSpread <= 0.0)
+            currentSpread = SymbolInfoDouble(symbol, SYMBOL_ASK) - SymbolInfoDouble(symbol, SYMBOL_BID);
+
+         if(SMC_MinFVGSpreadMultiple > 0.0 && currentSpread > 0.0)
+         {
+            if(fvgRange < SMC_MinFVGSpreadMultiple * currentSpread)
+            {
+               g_SMCCounters.fvgInvalidated++;
+               InvalidateSetup(setup, StringFormat("FVG range %.5f is smaller than %.1fx spread %.5f",
+                                                    fvgRange, SMC_MinFVGSpreadMultiple, SMC_MinFVGSpreadMultiple * currentSpread));
+               break;
+            }
+         }
+
+         double baseEntryPrice = (setup.direction == SIGNAL_BUY)
+                                 ? setup.m5FVG.bottom + fvgRange * entryPercent / 100.0
+                                 : setup.m5FVG.top - fvgRange * entryPercent / 100.0;
+
+         double rawSLPrice = GetBufferedSweepPrice(symbol, setup);
+
          if(setup.direction == SIGNAL_BUY)
          {
-            setup.slPrice = setup.sweepPrice;
+            setup.entryPrice = SMC_SpreadAwareEntry ? (baseEntryPrice + currentSpread) : baseEntryPrice;
+            setup.slPrice    = rawSLPrice;
             if(setup.slPrice >= setup.entryPrice)
             {
                InvalidateSetup(setup, "Structural SL is not below entry price for Buy setup");
@@ -1610,7 +1871,8 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          }
          else
          {
-            setup.slPrice = setup.sweepPrice;
+            setup.entryPrice = baseEntryPrice;
+            setup.slPrice    = SMC_SpreadAwareEntry ? (rawSLPrice + currentSpread) : rawSLPrice;
             if(setup.slPrice <= setup.entryPrice)
             {
                InvalidateSetup(setup, "Structural SL is not above entry price for Sell setup");
@@ -1623,25 +1885,31 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          SMCSwing oppSwing;
          if(setup.direction == SIGNAL_BUY)
          {
-            if(FindNextOpposingTargetHigh(symbol, SMC_M15_Timeframe, 200, setup.entryPrice, oppSwing))
+            if(FindNextOpposingTargetHigh(symbol, SMC_M15_Timeframe, 200, setup.entryPrice, oppSwing, setup.stopDistance))
             {
                setup.tpPrice = oppSwing.price;
             }
             else
             {
-               InvalidateSetup(setup, "No valid opposing M15 structural high target found ahead of entry price for TP");
+               string reason = SMC_TP_ScanForMinRR
+                               ? "No opposing M15 structural swing meets minimum reward/risk"
+                               : "No valid opposing M15 structural high target found ahead of entry price for TP";
+               InvalidateSetup(setup, reason);
                break;
             }
          }
          else
          {
-            if(FindNextOpposingTargetLow(symbol, SMC_M15_Timeframe, 200, setup.entryPrice, oppSwing))
+            if(FindNextOpposingTargetLow(symbol, SMC_M15_Timeframe, 200, setup.entryPrice, oppSwing, setup.stopDistance))
             {
                setup.tpPrice = oppSwing.price;
             }
             else
             {
-               InvalidateSetup(setup, "No valid opposing M15 structural low target found ahead of entry price for TP");
+               string reason = SMC_TP_ScanForMinRR
+                               ? "No opposing M15 structural swing meets minimum reward/risk"
+                               : "No valid opposing M15 structural low target found ahead of entry price for TP";
+               InvalidateSetup(setup, reason);
                break;
             }
          }
