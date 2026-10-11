@@ -235,8 +235,10 @@ void OnTimer()
             }
             else
             {
-               SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "TRADE_REJECTED_BY_RISK", "Pre-trade risk gate blocked execution");
-               InvalidateSetup(g_SMCSetups[setupIdx], "Pre-trade risk gate blocked execution");
+               // A session, spread, or drawdown block can be temporary. Preserve
+               // the valid FVG setup and retry while it remains structurally valid.
+               SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "ENTRY_DEFERRED_BY_RISK",
+                      "Pre-trade risk gate temporarily blocked execution; waiting while FVG remains valid");
             }
          }
       }
