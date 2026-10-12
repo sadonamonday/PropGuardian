@@ -30,17 +30,28 @@ The backtest ended in a net loss of **-$100.17 USD (-10.02%)**, reducing the sta
 
 ---
 
-## 2. Trade & Deal Execution Performance
+## 2. Comprehensive Trade & Position Count Reconciliation
+
+To eliminate ambiguity between report metrics and position tracker data, all trade and deal counts are reconciled in the table below:
+
+| Metric | Count | Citation Source | Definition & Technical Explanation |
+| :--- | :---: | :--- | :--- |
+| **MT5 Reported Trades** | **54** | MT5 Report Row 101 | Total **exit deals** (out-deals) recorded by MT5 Strategy Tester. When a position undergoes a 50% partial TP close at +1.5R and later closes the remaining 50% (at TP or SL/BE), MT5 counts **each exit deal** as a separate trade segment. (38 single-exit positions + 8 two-exit positions = 54 exit deals). |
+| **Filled Position Instances** | **46** | `g_SMCCounters.retraceReached = 46` | Total unique position instances opened (`DEAL_ENTRY_IN`) and closed (`DEAL_ENTRY_OUT`). |
+| **MT5 Profit Trades** | **18** | MT5 Report Row 102 | Total **exit deals** with profit $\ge \$0.00$. Includes 15 positive-profit exit deals + 3 breakeven exit deals with exact $\$0.00$ net profit. |
+| **Winning Exit Deals** | **15** | HTML Deal History (`net_p > $0.00`) | Exit deals yielding strictly positive net dollars ($> \$0.00$). |
+| **Net Winning Positions** | **9** | Position Aggregation (`net_p > $0.00`) | Unique position instances whose sum of all exit deal profits (including partials, swaps, commissions) is strictly positive ($> \$0.00$). |
+| **Net Losing Positions** | **34** | Position Aggregation (`net_p < $0.00`) | Unique position instances whose net profit across all exit deals is strictly negative ($< \$0.00$). |
+| **Net Breakeven Positions**| **3** | Position Aggregation (`net_p == $0.00`)| Unique position instances whose net profit across all exit deals equals exactly $\$0.00$ (Positions #27, #28, #33). |
+
+---
+
+## 3. Position Execution Statistics
 
 | Parameter | Value | Details |
 | :--- | :--- | :--- |
-| **Total Trades (MT5 Report)** | `54` | Combines 46 completed position outcomes & partials |
-| **Total Deals (MT5 Report)** | `100` | 46 IN deals, 54 OUT deals (plus 1 initial deposit) |
-| **Filled Positions (Reconstructed)** | `46` | Matches `g_SMCCounters.retraceReached` = 46 |
-| **Winning Trades (Profit Trades)** | `18 (33.33%)` | Report Row 102 |
-| **Losing Trades (Loss Trades)** | `36 (66.67%)` | Report Row 102 |
-| **Average Winning Trade** | `$3.54 USD` | Report Row 104 |
-| **Average Losing Trade** | `-$4.55 USD` | Report Row 104 |
+| **Average Winning Trade (MT5)** | `$3.54 USD` | Report Row 104 |
+| **Average Losing Trade (MT5)** | `-$4.55 USD` | Report Row 104 |
 | **Win / Loss Payoff Ratio** | **`0.78`** | `$3.54 / $4.55` (Cutting wins short via BE / Partial TP) |
 | **Largest Winning Trade** | `$9.12 USD` | Deal #23, GBPUSD BUY TP (2023.02.02 11:26:19) |
 | **Largest Losing Trade** | `-$9.97 USD` | Deal #14, USDJPY SELL SL (2023.01.18 04:40:27) |
@@ -56,22 +67,22 @@ The backtest ended in a net loss of **-$100.17 USD (-10.02%)**, reducing the sta
 
 ---
 
-## 3. Directional Performance (Long vs. Short)
+## 4. Directional Performance (Long vs. Short)
 
-| Direction | Trades | Wins | Losses | Win Rate (%) | Net Profit ($) |
+| Direction | Exit Deals (MT5) | Wins (Exit Deals) | Losses | Win Rate (%) | Net Profit ($) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Short Trades (SELL)** | 28 | 14 | 14 | **50.00%** | -$18.24 |
 | **Long Trades (BUY)** | 26 | 4 | 22 | **15.38%** | -$81.93 |
-| **Total** | **54** | **18** | **36** | **33.33%** | **-$100.17** |
+| **Total MT5 Trades** | **54** | **18** | **36** | **33.33%** | **-$100.17** |
 
-### Key Observation:
-Long trades performed drastically worse than Short trades (15.38% win rate vs. 50.00% win rate). During the first 8 months of 2023, multi-month strong dollar regimes caused counter-trend Long setups across EURUSD, GBPUSD, and AUDUSD to suffer high failure rates when sweeping minor lows.
+### Directional Findings:
+Long positions performed drastically worse than Short positions (15.38% win rate vs. 50.00% win rate). During the first 8 months of 2023, multi-month strong dollar regimes caused counter-trend Long setups across EURUSD, GBPUSD, and AUDUSD to suffer high failure rates when sweeping minor lows.
 
 ---
 
-## 4. Performance Breakdown by Symbol
+## 5. Performance Breakdown by Symbol
 
-| Symbol | Deals IN | Deals OUT | Wins | Losses | Win Rate (%) | Net Profit ($) |
+| Symbol | Deals IN | Deals OUT | Wins (Out Deals) | Losses (Out Deals) | Win Rate (%) | Net Profit ($) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **GBPUSD** | 17 | 20 | 7 | 13 | 35.00% | **-$9.99** |
 | **EURUSD** | 3 | 4 | 2 | 2 | 50.00% | **-$11.05** |
@@ -80,14 +91,9 @@ Long trades performed drastically worse than Short trades (15.38% win rate vs. 5
 | **USDJPY** | 11 | 12 | 1 | 11 | **8.33%** | **-$35.42** |
 | **Total** | **46** | **54** | **15** | **36** | **32.61%** | **-$100.17** |
 
-### Key Findings by Symbol:
-1. **USDJPY was the primary drag on account equity**, accounting for **$35.42 (35.36%)** of total net loss with 11 losses out of 12 closed deal exits. Tight structural SLs without spread buffers were repeatedly stopped out by JPY spread widening.
-2. **AUDUSD and USDCAD combined for -$43.71 in losses**, driven by choppy structural target scanning and premature break-even triggering.
-3. **GBPUSD was the most active symbol (17 trades)**, generating $14.30 gross win on Feb 2, 2023, but suffering multiple consecutive small losses during summer choppy range environments.
-
 ---
 
-## 5. Performance Breakdown by Year
+## 6. Performance Breakdown by Year
 
 | Year | Trades Closed | Deals IN / OUT | Net Profit ($) | Balance End ($) | Status |
 | :--- | :---: | :---: | :---: | :---: | :--- |
@@ -97,7 +103,7 @@ Long trades performed drastically worse than Short trades (15.38% win rate vs. 5
 
 ---
 
-## 6. Reported SMC Diagnostic Funnel Summary
+## 7. Reported SMC Diagnostic Funnel Summary
 
 The terminal diagnostic report printed upon emergency shutdown (`logs/20261012.log` at `2023.08.31 15:30:40`) summarizes the multi-timeframe SMC funnel:
 
