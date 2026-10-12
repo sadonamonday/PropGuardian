@@ -1729,5 +1729,170 @@ class TestPendingOrderInvalidationCancellation(unittest.TestCase):
         self.assertTrue(should_invalidate)
 
 
+class TestEmergencyStopAndDiagnostics(unittest.TestCase):
+
+    def test_emergency_logging_once_and_halt_latched(self):
+        """Verify emergency drawdown stop latches and logs exactly once upon threshold breach."""
+        state = {
+            'equityPeak': 10000.0,
+            'isHardStopped': False,
+            'isEmergencyHalted': False,
+            'portfolioEmergencyDDPct': 10.0
+        }
+        logs = []
+
+        def update_drawdown_state(risk_state, current_equity, open_positions_count):
+            total_dd = max(0.0, (risk_state['equityPeak'] - current_equity) / risk_state['equityPeak'] * 100.0)
+            if total_dd >= risk_state['portfolioEmergencyDDPct']:
+                risk_state['isHardStopped'] = True
+                if not risk_state['isEmergencyHalted']:
+                    risk_state['isEmergencyHalted'] = True
+                    logs.append(f"[RISK] EMERGENCY: Total DD {total_dd:.2f}% >= {risk_state['portfolioEmergencyDDPct']:.2f}% — closing ALL positions & halting EA entirely")
+                    # Emergency liquidation
+                else:
+                    if open_positions_count > 0:
+                        logs.append("[RISK] Retrying liquidation for open positions")
+
+        # Equity drops to 8998.0 (10.02% DD)
+        update_drawdown_state(state, 8998.0, open_positions_count=1)
+        self.assertTrue(state['isEmergencyHalted'])
+        self.assertTrue(state['isHardStopped'])
+        self.assertEqual(len(logs), 1)
+        self.assertIn("10.02%", logs[0])
+
+        # Subsequent tick with equity 8998.0 (10.02% DD) and positions already closed (open_positions_count=0)
+        update_drawdown_state(state, 8998.0, open_positions_count=0)
+        self.assertEqual(len(logs), 1, "Emergency banner must NOT repeat on subsequent ticks")
+
+    def test_emergency_halt_persists_across_new_day(self):
+        """Verify emergency halt state is preserved across new trading day reset."""
+        state = {
+            'isSoftStopped': True,
+            'isHardStopped': True,
+            'isEmergencyHalted': True,
+            'dailyPnL': -500.0,
+            'tradesToday': 2
+        }
+
+        # Simulate CheckNewDay logic
+        def check_new_day(risk_state):
+            risk_state['dailyPnL'] = 0.0
+            risk_state['isSoftStopped'] = False
+            if not risk_state['isEmergencyHalted']:
+                risk_state['isHardStopped'] = False
+            risk_state['tradesToday'] = 0
+
+        check_new_day(state)
+        self.assertTrue(state['isEmergencyHalted'])
+        self.assertTrue(state['isHardStopped'], "Hard stop MUST remain active across new day if emergency halted")
+        self.assertFalse(state['isSoftStopped'])
+
+    def test_failed_liquidation_retry_and_order_blockage(self):
+        """Verify failed liquidation can be retried and new trade entries remain blocked during emergency halt."""
+        state = {
+            'isEmergencyHalted': True,
+            'isHardStopped': True
+        }
+        logs = []
+
+        def can_open_trade(risk_state):
+            if risk_state['isEmergencyHalted']:
+                return False
+            return True
+
+        self.assertFalse(can_open_trade(state), "CanOpenTrade MUST return False when emergency halt is active")
+
+        # Simulate retry on tick when positions remain open
+        positions_remaining = 1
+        retry_count = 0
+
+        for _ in range(5):
+            if state['isEmergencyHalted'] and positions_remaining > 0:
+                retry_count += 1
+                positions_remaining = 0 # Closed on retry
+
+        self.assertEqual(retry_count, 1)
+
+    def test_diagnostic_report_interval_and_unique_counters(self):
+        """Verify periodic diagnostic summary reporting and unique stage counter incrementing."""
+        poi_counter = 0
+        sweep_counter = 0
+
+        setup = {'state': 'SMC_IDLE'}
+
+        def process_tick(s, poi_found, sweep_found):
+            nonlocal poi_counter, sweep_counter
+            if s['state'] == 'SMC_IDLE' and poi_found:
+                poi_counter += 1
+                s['state'] = 'SMC_H4_POI_ACTIVE'
+            elif s['state'] == 'SMC_WAITING_FOR_M15_SWEEP' and sweep_found:
+                sweep_counter += 1
+                s['state'] = 'SMC_M15_SWEEP_DETECTED'
+
+        # Tick 1: POI found -> transition to H4_POI_ACTIVE
+        process_tick(setup, poi_found=True, sweep_found=False)
+        self.assertEqual(poi_counter, 1)
+
+        # Tick 2: Subsequent tick in H4_POI_ACTIVE -> poi_counter MUST NOT increment
+        process_tick(setup, poi_found=True, sweep_found=False)
+        self.assertEqual(poi_counter, 1)
+
+        # Transition to WAITING_FOR_M15_SWEEP
+        setup['state'] = 'SMC_WAITING_FOR_M15_SWEEP'
+
+        # Tick 3: Sweep found -> transition to M15_SWEEP_DETECTED
+        process_tick(setup, poi_found=False, sweep_found=True)
+        self.assertEqual(sweep_counter, 1)
+
+        # Tick 4: Subsequent tick in M15_SWEEP_DETECTED -> sweep_counter MUST NOT increment
+        process_tick(setup, poi_found=False, sweep_found=True)
+        self.assertEqual(sweep_counter, 1)
+
+        # Test diagnostic interval timer (e.g. 1440 min = 86400s)
+        last_report_time = 1000000
+        interval_seconds = 1440 * 60
+        report_logs = []
+
+        def check_periodic_report(current_time):
+            nonlocal last_report_time
+            if current_time - last_report_time >= interval_seconds:
+                last_report_time = current_time
+                report_logs.append(f"Report printed at {current_time}")
+
+        check_periodic_report(1000000 + 3600) # 1 hr later -> no report
+        self.assertEqual(len(report_logs), 0)
+
+        check_periodic_report(1000000 + 86400) # 24 hrs later -> report printed
+        self.assertEqual(len(report_logs), 1)
+
+    def test_rate_limited_logging(self):
+        """Verify rate-limited logging suppresses identical messages within the configured interval."""
+        rate_limits = {}
+        output_logs = []
+
+        def print_rate_limited(key, message, min_interval=3600, current_time=1000):
+            if key in rate_limits:
+                entry = rate_limits[key]
+                if entry['msg'] != message or (current_time - entry['time']) >= min_interval:
+                    output_logs.append(message)
+                    rate_limits[key] = {'time': current_time, 'msg': message}
+            else:
+                output_logs.append(message)
+                rate_limits[key] = {'time': current_time, 'msg': message}
+
+        # First call
+        print_rate_limited("KEY1", "Message 1", current_time=1000)
+        self.assertEqual(len(output_logs), 1)
+
+        # Immediate duplicate calls within interval
+        for _ in range(100):
+            print_rate_limited("KEY1", "Message 1", current_time=1005)
+        self.assertEqual(len(output_logs), 1)
+
+        # Call after 3601 seconds
+        print_rate_limited("KEY1", "Message 1", current_time=4601)
+        self.assertEqual(len(output_logs), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

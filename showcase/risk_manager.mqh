@@ -38,6 +38,7 @@ struct RiskState
    double equityPeak;             // All-time equity peak
    bool   isSoftStopped;          // New trades blocked
    bool   isHardStopped;          // All positions to be closed
+   bool   isEmergencyHalted;      // Total drawdown emergency halt latched
    int    consecutiveLosses;      // Sequential losing trades
    int    tradesToday;            // Trade count today
    datetime circuitBreakerResetTime; // 0 = not tripped
@@ -48,6 +49,13 @@ double CalculateTotalDD(const RiskState &state);
 double CalculatePortfolioDD(const RiskState &state);
 int    CountOpenPositions();
 void   EmergencyCloseAll();
+
+void PrintEmergencyDiagnosticSummary()
+{
+   PrintFormat("[RISK] Emergency Shutdown Diagnostic Summary:");
+   PrintDiagnosticCountersReport();
+   WriteDiagnosticCSVReport();
+}
 
 //+------------------------------------------------------------------+
 //| Daily Reset — CRITICAL: Must run BEFORE risk checks               |
@@ -64,15 +72,21 @@ bool CheckNewDay(RiskState &state)
       
       state.dailyPnL = 0.0;
       state.isSoftStopped = false;
-      state.isHardStopped = false;
+      if(!state.isEmergencyHalted)
+      {
+         state.isHardStopped = false;
+      }
       state.dailyReferenceBalance = AccountInfoDouble(ACCOUNT_BALANCE);
       state.tradesToday = 0;
       state.equityPeak = MathMax(state.equityPeak, 
                                   AccountInfoDouble(ACCOUNT_EQUITY));
       lastDay = dt.day_of_year;
       
-      PrintFormat("[RISK] New day — Balance: $%.2f | Peak: $%.2f | Yesterday PnL: $%.2f",
-                  state.dailyReferenceBalance, state.equityPeak, oldPnL);
+      if(!state.isEmergencyHalted)
+      {
+         PrintFormat("[RISK] New day — Balance: $%.2f | Peak: $%.2f | Yesterday PnL: $%.2f",
+                     state.dailyReferenceBalance, state.equityPeak, oldPnL);
+      }
       return true;
    }
    return false;
@@ -84,24 +98,35 @@ bool CheckNewDay(RiskState &state)
 //+------------------------------------------------------------------+
 bool CanOpenTrade(RiskState &state, string symbol)
 {
-   // Gate 1: Hard stop (emergency — all positions being closed)
+   // Gate 0: Emergency halt
+   if(state.isEmergencyHalted)
+   {
+      PrintRateLimited("RISK_EMERGENCY_" + symbol,
+                       StringFormat("[RISK] BLOCKED: Emergency drawdown stop active for %s", symbol));
+      return false;
+   }
+
+   // Gate 1: Hard stop (daily loss limit hard stop)
    if(state.isHardStopped)
    {
-      PrintFormat("[RISK] BLOCKED: Hard stop active");
+      PrintRateLimited("RISK_HARD_" + symbol,
+                       StringFormat("[RISK] BLOCKED: Hard stop active for %s", symbol));
       return false;
    }
    
    // Gate 2: Soft stop (daily loss limit reached)
    if(state.isSoftStopped)
    {
-      PrintFormat("[RISK] BLOCKED: Soft stop — daily loss limit");
+      PrintRateLimited("RISK_SOFT_" + symbol,
+                       StringFormat("[RISK] BLOCKED: Soft stop daily loss limit active for %s", symbol));
       return false;
    }
    
    // Gate 3: Max trades per day
    if(state.tradesToday >= Max_Trades_Per_Day)
    {
-      PrintFormat("[RISK] BLOCKED: Max %d trades/day reached", Max_Trades_Per_Day);
+      PrintRateLimited("RISK_MAXTRADES_" + symbol,
+                       StringFormat("[RISK] BLOCKED: Max %d trades/day reached for %s", Max_Trades_Per_Day, symbol));
       return false;
    }
    
@@ -117,8 +142,9 @@ bool CanOpenTrade(RiskState &state, string symbol)
       }
       else
       {
-         PrintFormat("[RISK] BLOCKED: Circuit breaker — %d consecutive losses (cooldown until %s)",
-                     state.consecutiveLosses, TimeToString(state.circuitBreakerResetTime));
+         PrintRateLimited("RISK_CB_" + symbol,
+                          StringFormat("[RISK] BLOCKED: Circuit breaker — %d consecutive losses (cooldown until %s)",
+                                       state.consecutiveLosses, TimeToString(state.circuitBreakerResetTime)));
          return false;
       }
    }
@@ -127,7 +153,8 @@ bool CanOpenTrade(RiskState &state, string symbol)
    int openCount = CountOpenPositions();
    if(openCount >= Max_Open_Positions)
    {
-      PrintFormat("[RISK] BLOCKED: Max %d positions open", Max_Open_Positions);
+      PrintRateLimited("RISK_MAXPOS_" + symbol,
+                       StringFormat("[RISK] BLOCKED: Max %d positions open", Max_Open_Positions));
       return false;
    }
    
@@ -135,14 +162,16 @@ bool CanOpenTrade(RiskState &state, string symbol)
    string baseCurrency = GetBaseCurrency(symbol);
    if(CountCurrencyExposure(baseCurrency) >= Max_Currency_Exposure)
    {
-      PrintFormat("[RISK] BLOCKED: Max exposure for %s", baseCurrency);
+      PrintRateLimited("RISK_EXPOSURE_" + symbol,
+                       StringFormat("[RISK] BLOCKED: Max exposure for %s", baseCurrency));
       return false;
    }
    
    // Gate 8: Safety Filters Gate
    if(!PassesAllFilters(symbol))
    {
-      PrintFormat("[RISK] BLOCKED: Safety filters gate failed for %s", symbol);
+      PrintRateLimited("RISK_FILTERS_" + symbol,
+                       StringFormat("[RISK] BLOCKED: Safety filters gate failed for %s", symbol));
       return false;
    }
 
@@ -261,9 +290,21 @@ void UpdateDrawdownState(RiskState &state)
    if(totalDD >= Portfolio_Emergency_DD_Pct)
    {
       state.isHardStopped = true;
-      PrintFormat("[RISK] 🚨 EMERGENCY: Total DD %.2f%% >= %.2f%% — closing ALL positions & halting EA entirely",
-                  totalDD, Portfolio_Emergency_DD_Pct);
-      EmergencyCloseAll();
+      if(!state.isEmergencyHalted)
+      {
+         state.isEmergencyHalted = true;
+         PrintFormat("[RISK] 🚨 EMERGENCY: Total DD %.2f%% >= %.2f%% — closing ALL positions & halting EA entirely",
+                     totalDD, Portfolio_Emergency_DD_Pct);
+         EmergencyCloseAll();
+         PrintEmergencyDiagnosticSummary();
+      }
+      else
+      {
+         if(CountOpenPositions() > 0)
+         {
+            EmergencyCloseAll();
+         }
+      }
    }
 }
 

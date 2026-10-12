@@ -65,7 +65,7 @@ bool PassesAllFilters(string symbol)
    string baseCurr = GetBaseCurrency(symbol);
    if(CountCurrencyExposure(baseCurr) >= Max_Currency_Exposure)
    {
-      PrintFormat("[FILTER] Currency exposure limit reached for %s", baseCurr);
+      PrintRateLimited("FILTER_EXP_" + symbol, StringFormat("[FILTER] Currency exposure limit reached for %s", baseCurr));
       return false;
    }
 
@@ -116,7 +116,7 @@ bool IsWithinTradingSession()
    if(dt.hour >= 8 && dt.hour < 22)
       return true;
 
-   PrintFormat("[FILTER] Outside GMT trading window (08:00-22:00 GMT). Current GMT hour: %d", dt.hour);
+   PrintRateLimited("FILTER_GMT", StringFormat("[FILTER] Outside GMT trading window (08:00-22:00 GMT). Current GMT hour: %d", dt.hour));
    return false;
 }
 
@@ -174,8 +174,9 @@ bool IsAsianRangeExceeded(string symbol)
 
    if(asianRangePips > Max_Asian_Range_Pips)
    {
-      PrintFormat("[FILTER] Asian range for %s is %.1f pips > %.1f pips — blocking entries until 10:00 GMT",
-                  symbol, asianRangePips, Max_Asian_Range_Pips);
+      PrintRateLimited("FILTER_ASIAN_" + symbol,
+                       StringFormat("[FILTER] Asian range for %s is %.1f pips > %.1f pips — blocking entries until 10:00 GMT",
+                                    symbol, asianRangePips, Max_Asian_Range_Pips));
       return true;
    }
 
@@ -191,8 +192,9 @@ bool CheckSpread(string symbol)
    
    if(spread > Max_Spread_Points)
    {
-      PrintFormat("[FILTER] Spread too wide: %d > %d points", 
-                  (int)spread, Max_Spread_Points);
+      PrintRateLimited("FILTER_SPREAD_" + symbol,
+                       StringFormat("[FILTER] Spread too wide for %s: %d > %d points",
+                                    symbol, (int)spread, Max_Spread_Points));
       return false;
    }
    return true;
@@ -253,8 +255,9 @@ bool IsToxicVolatility(string symbol)
 
    if(atrHistorical > 0 && atrCurrent > atrHistorical * ATR_Max_Multiplier)
    {
-      PrintFormat("[FILTER] Toxic volatility: ATR %.5f > %.1fx historical %.5f",
-                  atrCurrent, ATR_Max_Multiplier, atrHistorical);
+      PrintRateLimited("FILTER_TOXIC_" + symbol,
+                       StringFormat("[FILTER] Toxic volatility for %s: ATR %.5f > %.1fx historical %.5f",
+                                    symbol, atrCurrent, ATR_Max_Multiplier, atrHistorical));
       return true;
    }
    return false;
@@ -350,8 +353,8 @@ bool IsInCooldown(string symbol)
          if((now - lastTradeTime[i]) < cooldownSeconds)
          {
             int remaining = cooldownSeconds - (int)(now - lastTradeTime[i]);
-            PrintFormat("[FILTER] Cooldown for %s: %d sec remaining",
-                        symbol, remaining);
+            PrintRateLimited("FILTER_COOLDOWN_" + symbol,
+                             StringFormat("[FILTER] Cooldown for %s: %d sec remaining", symbol, remaining));
             return true;
          }
       }

@@ -34,6 +34,9 @@ input double            SMC_MinFVGSpreadMultiple = 0.0;          // Min FVG rang
 input bool              SMC_SL_SpreadBuffer      = false;        // Add spread buffer to structural SL
 input double            SMC_SL_ATRBuffer         = 0.0;          // Add ATR(M15,14) multiplier buffer to structural SL
 input bool              SMC_InvalidateAfterCHoCH = false;        // Invalidate setup if price trades through sweep price after CHoCH confirmed
+input bool              SMC_EnableDiagnostics    = true;         // Enable Periodic & Summary SMC Diagnostics
+input int               SMC_DiagnosticIntervalMinutes = 1440;    // Periodic Diagnostic Summary Interval in Minutes (1440 = 1 Day)
+input bool              SMC_EnableCSVDiagnostics = true;         // Export SMC Diagnostic Summary to SMC_Diagnostics.csv
 
 // --- Enums ---
 
@@ -209,10 +212,79 @@ struct SMCDiagnosticCounters
 };
 
 static SMCDiagnosticCounters g_SMCCounters;
+static datetime              g_lastDiagnosticReportTime = 0;
+
+void WriteDiagnosticCSVReport()
+{
+   if(!SMC_EnableCSVDiagnostics) return;
+
+   string filename = "SMC_Diagnostics.csv";
+   int fileFlags = FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI | FILE_SHARE_READ;
+   int fileHandle = FileOpen(filename, fileFlags);
+
+   if(fileHandle != INVALID_HANDLE)
+   {
+      ulong fileSize = FileSize(fileHandle);
+      if(fileSize == 0)
+      {
+         FileWrite(fileHandle,
+                   "Timestamp", "Symbol", "POIs_Detected", "POIs_Activated",
+                   "Sweeps_Detected", "CHoCH_Confirmed", "M5_Confirmations",
+                   "FVGs_Detected", "Orders_Submitted", "Orders_Accepted",
+                   "Orders_Rejected", "Orders_Filled", "Trades_Closed",
+                   "Setups_Invalidated", "Invalidation_Reasons", "Risk_Filter_Rejections");
+      }
+      else
+      {
+         FileSeek(fileHandle, 0, SEEK_END);
+      }
+
+      string sym = Symbol();
+      datetime now = TimeCurrent();
+      int setupsInvalidated = 0;
+      for(int s = 0; s < ArraySize(g_SMCSetups); s++)
+      {
+         if(g_SMCSetups[s].state == SMC_INVALIDATED)
+            setupsInvalidated++;
+      }
+
+      FileWrite(fileHandle,
+                TimeToString(now, TIME_DATE|TIME_SECONDS),
+                sym,
+                g_SMCCounters.poiDetected,
+                g_SMCCounters.poiActivated,
+                g_SMCCounters.sweepDetected,
+                g_SMCCounters.chochConfirmed,
+                g_SMCCounters.m5Confirmed,
+                g_SMCCounters.fvgDetected,
+                g_SMCCounters.orderSubmitted,
+                g_SMCCounters.orderAccepted,
+                g_SMCCounters.orderRejected,
+                g_SMCCounters.retraceReached,
+                g_SMCCounters.tradeClosed,
+                setupsInvalidated,
+                StringFormat("CHoCH_Rej:%d|FVG_Inv:%d|NoChase:%d|RevalFail:%d",
+                             g_SMCCounters.chochRejected, g_SMCCounters.fvgInvalidated,
+                             g_SMCCounters.noChaseTriggered, g_SMCCounters.poiRevalidationFailed),
+                StringFormat("ExpSweep:%d|ExpM5:%d|InvAfterCHoCH:%d",
+                             g_SMCCounters.expiredWaitingSweep, g_SMCCounters.expiredWaitingM5,
+                             g_SMCCounters.invalidatedAfterCHoCH));
+
+      FileClose(fileHandle);
+   }
+}
 
 void PrintDiagnosticCountersReport()
 {
+   if(!SMC_EnableDiagnostics) return;
+
+   datetime now = TimeCurrent();
+   datetime periodStart = iTime(Symbol(), PERIOD_D1, MathMax(0, iBars(Symbol(), PERIOD_D1) - 1));
+
    PrintFormat("[SMC_DIAGNOSTIC] --- Funnel Diagnostic Report ---");
+   PrintFormat("[SMC_DIAGNOSTIC] Symbol: %s | Time: %s | Test Period Start: %s",
+               Symbol(), TimeToString(now, TIME_DATE|TIME_MINUTES),
+               periodStart > 0 ? TimeToString(periodStart, TIME_DATE) : "N/A");
    PrintFormat("[SMC_DIAGNOSTIC] POIs Detected: %d | Activated: %d", g_SMCCounters.poiDetected, g_SMCCounters.poiActivated);
    PrintFormat("[SMC_DIAGNOSTIC] Sweeps Detected: %d", g_SMCCounters.sweepDetected);
    PrintFormat("[SMC_DIAGNOSTIC] CHoCH Candidates: %d | Confirmed: %d | Rejected/Invalidated: %d", g_SMCCounters.chochCandidateFound, g_SMCCounters.chochConfirmed, g_SMCCounters.chochRejected);
@@ -222,6 +294,25 @@ void PrintDiagnosticCountersReport()
    PrintFormat("[SMC_DIAGNOSTIC] Trades Closed: %d", g_SMCCounters.tradeClosed);
    PrintFormat("[SMC_DIAGNOSTIC] Invalidated After CHoCH: %d", g_SMCCounters.invalidatedAfterCHoCH);
    PrintFormat("[SMC_DIAGNOSTIC] Expired Waiting Sweep: %d | Expired Waiting M5: %d | POI Revalidation Failed: %d", g_SMCCounters.expiredWaitingSweep, g_SMCCounters.expiredWaitingM5, g_SMCCounters.poiRevalidationFailed);
+}
+
+void CheckPeriodicDiagnosticReport()
+{
+   if(!SMC_EnableDiagnostics || SMC_DiagnosticIntervalMinutes <= 0) return;
+
+   datetime now = TimeCurrent();
+   if(g_lastDiagnosticReportTime == 0)
+   {
+      g_lastDiagnosticReportTime = now;
+      return;
+   }
+
+   if(now - g_lastDiagnosticReportTime >= SMC_DiagnosticIntervalMinutes * 60)
+   {
+      g_lastDiagnosticReportTime = now;
+      PrintDiagnosticCountersReport();
+      WriteDiagnosticCSVReport();
+   }
 }
 
 // --- Global Strategy State ---
@@ -982,7 +1073,6 @@ bool GetActive4HPOI(string symbol, SMCPOI &outPOI)
    if(newestTime > 0)
    {
       outPOI = newestPOI;
-      g_SMCCounters.poiDetected++;
       return true;
    }
 
@@ -1043,7 +1133,6 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
          if(low1 < m15Low.price && close1 > m15Low.price)
          {
             outSweptSwing = m15Low;
-            g_SMCCounters.sweepDetected++;
             SMCLog("", symbol, "SWEEP_DETECTED",
                    StringFormat("BUY Sweep Detected | CandleBar1Time=%s | Low1=%.5f | Close1=%.5f | SweptSwingTime=%s | SweptSwingPrice=%.5f",
                                 TimeToString(m15Bar1Time, TIME_DATE|TIME_MINUTES), low1, close1,
@@ -1063,7 +1152,6 @@ bool CheckM15LiquiditySweep(string symbol, const SMCPOI &poi, ENUM_SIGNAL_TYPE d
          if(high1 > m15High.price && close1 < m15High.price)
          {
             outSweptSwing = m15High;
-            g_SMCCounters.sweepDetected++;
             SMCLog("", symbol, "SWEEP_DETECTED",
                    StringFormat("SELL Sweep Detected | CandleBar1Time=%s | High1=%.5f | Close1=%.5f | SweptSwingTime=%s | SweptSwingPrice=%.5f",
                                 TimeToString(m15Bar1Time, TIME_DATE|TIME_MINUTES), high1, close1,
@@ -1597,6 +1685,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          SMCPOI poi;
          if(GetActive4HPOI(symbol, poi))
          {
+            g_SMCCounters.poiDetected++;
             setup.poi4H = poi;
             setup.direction = (poi.type == POI_TYPE_DEMAND) ? SIGNAL_BUY : SIGNAL_SELL;
             setup.state = SMC_H4_POI_ACTIVE;
@@ -1671,6 +1760,7 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          SMCSwing sweptSwing;
          if(CheckM15LiquiditySweep(symbol, setup.poi4H, setup.direction, sweptSwing))
          {
+            g_SMCCounters.sweepDetected++;
             setup.m15SweptSwing = sweptSwing;
             setup.sweepPrice     = (setup.direction == SIGNAL_BUY) ? iLow(symbol, SMC_M15_Timeframe, 1) : iHigh(symbol, SMC_M15_Timeframe, 1);
             setup.sweepTime      = iTime(symbol, SMC_M15_Timeframe, 1);
@@ -2018,6 +2108,8 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
 void SMCEngine_OnTick()
 {
    if(!SMC_UseStrategy) return;
+
+   CheckPeriodicDiagnosticReport();
 
    int totalSetups = ArraySize(g_SMCSetups);
    for(int i = 0; i < totalSetups; i++)

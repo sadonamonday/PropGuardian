@@ -45,6 +45,7 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    PrintDiagnosticCountersReport();
+   WriteDiagnosticCSVReport();
    ReleaseSignalEngineHandles();
    ReleaseSafetyFilterHandles();
 }
@@ -260,8 +261,9 @@ void OnTimer()
                   }
                }
 
-               SMCLog(g_SMCSetups[setupIdx].setupID, symbol, "ENTRY_DEFERRED_BY_RISK",
-                      "Pre-trade risk gate temporarily blocked execution; waiting while FVG remains valid");
+               PrintRateLimited("DEFERRED_RISK_" + symbol,
+                                StringFormat("[SMC_LOG] [%s] [%s] ENTRY_DEFERRED_BY_RISK | Pre-trade risk gate temporarily blocked execution; waiting while FVG remains valid",
+                                             g_SMCSetups[setupIdx].setupID, symbol), 3600);
             }
          }
       }
