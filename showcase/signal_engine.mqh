@@ -91,6 +91,45 @@ static int g_atrHandles[];
 static int g_adxHandles[];
 
 //+------------------------------------------------------------------+
+//| Rate-Limited Logging Framework                                    |
+//+------------------------------------------------------------------+
+struct RateLimitEntry
+{
+   string   key;
+   datetime lastTime;
+   string   lastMsg;
+};
+
+static RateLimitEntry g_rateLimits[];
+
+void PrintRateLimited(string key, string message, int minIntervalSeconds = 3600)
+{
+   if((bool)MQLInfoInteger(MQL_OPTIMIZATION)) return;
+
+   datetime now = TimeCurrent();
+   int total = ArraySize(g_rateLimits);
+   for(int i = 0; i < total; i++)
+   {
+      if(g_rateLimits[i].key == key)
+      {
+         if(g_rateLimits[i].lastMsg != message || (now - g_rateLimits[i].lastTime) >= minIntervalSeconds)
+         {
+            Print(message);
+            g_rateLimits[i].lastTime = now;
+            g_rateLimits[i].lastMsg  = message;
+         }
+         return;
+      }
+   }
+
+   ArrayResize(g_rateLimits, total + 1);
+   g_rateLimits[total].key      = key;
+   g_rateLimits[total].lastTime = now;
+   g_rateLimits[total].lastMsg  = message;
+   Print(message);
+}
+
+//+------------------------------------------------------------------+
 //| Helper: Pip size for a symbol (10x point on 3/5-digit symbols)    |
 //+------------------------------------------------------------------+
 double GetPipSizeForSymbol(string symbol)
