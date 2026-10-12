@@ -868,7 +868,7 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
       // 1. Find prior 4H swing high formed at or before obBarIndex for BOS confirmation
       // (50 bars is an engineering search limit for performance, not a strategy rule)
       SMCSwing prevHigh;
-      if(!FindMostRecentSwingHigh(symbol, SMC_4H_Timeframe, 50, prevHigh, obBarIndex + 1))
+      if(!FindMostRecentSwingHigh(symbol, SMC_4H_Timeframe, obBarIndex + 50, prevHigh, obBarIndex + 1))
          return false;
 
       // 2. Search forward in chronological order after the OB (c1 <= obBarIndex)
@@ -928,7 +928,7 @@ bool Find4HOrderBlock(string symbol, int obBarIndex, SMCPOI &outPOI)
       // 1. Find prior 4H swing low formed at or before obBarIndex for BOS confirmation
       // (50 bars is an engineering search limit for performance, not a strategy rule)
       SMCSwing prevLow;
-      if(!FindMostRecentSwingLow(symbol, SMC_4H_Timeframe, 50, prevLow, obBarIndex + 1))
+      if(!FindMostRecentSwingLow(symbol, SMC_4H_Timeframe, obBarIndex + 50, prevLow, obBarIndex + 1))
          return false;
 
       // 2. Search forward in chronological order after the OB (c1 <= obBarIndex)

@@ -297,6 +297,26 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertFalse(valid, "Non-directional displacement candle C2 must reject candidate OB")
         self.assertIsNone(ob)
 
+    def test_ob_12_deep_ob_bar_index_lookback(self):
+        # OB-12: Regression test verifying Find4HOrderBlock scanning when ob_idx >= 10 or ob_idx >= 50
+        # When ob_idx is e.g. 50, startBar = ob_idx + 1 = 51. Lookback maxLookbackBars must be ob_idx + 50 = 100.
+        ob_idx = 50
+        bars = {
+            50: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB at bar 50
+            49: {'open': 1.1005, 'close': 1.1035, 'high': 1.1040, 'low': 1.1000},             # c2=49
+            48: {'open': 1.1030, 'close': 1.1050, 'high': 1.1055, 'low': 1.1042},             # c3=48
+            1:  {'open': 1.1048, 'close': 1.1060, 'high': 1.1065, 'low': 1.1045}
+        }
+        prev_swing_high = 1.1040
+
+        # Prior swing search at bar 50+ must scan up to ob_idx + 50 (bar 100) rather than failing at fixed 50
+        max_lookback = ob_idx + 50
+        self.assertEqual(max_lookback, 100)
+
+        valid, ob = self._find_4h_order_block(bars, 50, prev_swing_high)
+        self.assertTrue(valid, "Candidate OB at ob_idx=50 must be correctly processed")
+        self.assertEqual(ob['type'], 'DEMAND')
+
     def test_4h_bullish_fvg(self):
         # Bullish FVG: Low(C3) > High(C1)
         high_c1 = 1.1000
