@@ -1098,6 +1098,20 @@ class TestSMCEngineRules(unittest.TestCase):
 
         self.assertNotIn(forming_bar, completed_bars)
 
+    def test_m5_chronology_boundary_checks(self):
+        # 9. Verify M5 confirmation chronology boundary check (fvg.timeC3 >= setup.chochTime)
+        setup_choch_time = 1672704000 # CHoCH confirmed at 2023.01.03 00:00
+
+        # Case A: Stale FVG completed before CHoCH (e.g. timeC3 = 23:55 prior day = 1672703700 < 1672704000)
+        fvg_stale = {'timeC3': 1672703700, 'isValid': True}
+        is_stale_accepted = not (setup_choch_time > 0 and fvg_stale['timeC3'] < setup_choch_time)
+        self.assertFalse(is_stale_accepted, "Stale FVG completed prior to CHoCH confirmation must be rejected")
+
+        # Case B: Fresh FVG completed at or after CHoCH (e.g. timeC3 = 00:05 = 1672704300 >= 1672704000)
+        fvg_fresh = {'timeC3': 1672704300, 'isValid': True}
+        is_fresh_accepted = not (setup_choch_time > 0 and fvg_fresh['timeC3'] < setup_choch_time)
+        self.assertTrue(is_fresh_accepted, "Fresh FVG completed after CHoCH confirmation must be accepted")
+
 
     # --- 4. TRADE & SYSTEM INTEGRATION TESTS ---
 

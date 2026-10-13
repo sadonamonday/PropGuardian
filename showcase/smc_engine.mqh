@@ -1908,6 +1908,12 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          SMCFVG fvg;
          if(CheckM5DisplacementAndFVG(symbol, setup.direction, m5Swing, fvg))
          {
+            if(setup.chochTime > 0 && fvg.timeC3 < setup.chochTime)
+            {
+               // Reject stale M5 FVG sequence completed prior to M15 CHoCH confirmation
+               break;
+            }
+
             g_SMCCounters.m5Confirmed++;
             setup.m5FVG = fvg;
             setup.state = SMC_M5_CONFIRMATION;
