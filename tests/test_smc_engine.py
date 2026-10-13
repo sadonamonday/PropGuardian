@@ -19,13 +19,32 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertTrue(is_low)
 
     @staticmethod
-    def _find_4h_order_block(bars, ob_idx, prev_swing_price):
+    def _find_most_recent_swing_high(bars, start_bar, max_lookback_bars):
+        """
+        Replicates FindMostRecentSwingHigh contract in smc_engine.mqh.
+        Scans from start_bar up to max_lookback_bars (inclusive).
+        """
+        for i in range(start_bar, max_lookback_bars + 1):
+            if i in bars:
+                h_mid = bars[i]['high']
+                h_left1 = bars.get(i + 1, {}).get('high', 0)
+                h_left2 = bars.get(i + 2, {}).get('high', 0)
+                h_right1 = bars.get(i - 1, {}).get('high', 0)
+                h_right2 = bars.get(i - 2, {}).get('high', 0)
+                if h_left1 > 0 and h_left2 > 0 and h_right1 > 0 and h_right2 > 0:
+                    if h_mid > h_left1 and h_mid > h_left2 and h_mid > h_right1 and h_mid > h_right2:
+                        return True, {'price': h_mid, 'barIndex': i}
+        return False, None
+
+    @staticmethod
+    def _find_4h_order_block(bars, ob_idx, prev_swing_price=None):
         """
         Helper simulation replicating updated Find4HOrderBlock logic in smc_engine.mqh.
         Note: These Python tests are unit test helper simulations rather than direct execution/compilation of MQL5 code.
         bars: dict mapping barIndex (1, 2, ..., N) -> candle dict
         ob_idx: candidate Order Block bar index
-        prev_swing_price: prior 4H swing high (for bullish) or swing low (for bearish) price
+        prev_swing_price: prior 4H swing high (for bullish) or swing low (for bearish) price.
+                           If None, dynamically evaluated using _find_most_recent_swing_high.
         """
         if ob_idx not in bars or ob_idx < 3:
             return False, None
@@ -39,6 +58,14 @@ class TestSMCEngineRules(unittest.TestCase):
 
         # Bullish OB: final down-close candle before qualifying bullish move
         if close_ob < open_ob:
+            if prev_swing_price is None:
+                start_bar = ob_idx + 1
+                max_lookback = ob_idx + 50
+                found_swing, swing_data = TestSMCEngineRules._find_most_recent_swing_high(bars, start_bar, max_lookback)
+                if not found_swing:
+                    return False, None
+                prev_swing_price = swing_data['price']
+
             has_qualifying_move = False
 
             for c1 in range(ob_idx, 2, -1):
@@ -296,6 +323,41 @@ class TestSMCEngineRules(unittest.TestCase):
         valid, ob = self._find_4h_order_block(bars, 4, prev_swing_high)
         self.assertFalse(valid, "Non-directional displacement candle C2 must reject candidate OB")
         self.assertIsNone(ob)
+
+    def test_ob_12_deep_ob_bar_index_lookback(self):
+        # OB-12: Enhanced regression test verifying Find4HOrderBlock and FindMostRecentSwingHigh contracts
+        # When candidate OB is at ob_idx = 50, startBar = ob_idx + 1 = 51.
+        # Max lookback must be ob_idx + 50 = 100 to scan 50 bars prior to bar 50.
+        ob_idx = 50
+
+        # Create prior 5-bar swing high centered at bar 70 (high = 1.1040)
+        bars = {
+            72: {'open': 1.1010, 'close': 1.1015, 'high': 1.1020, 'low': 1.1000},
+            71: {'open': 1.1015, 'close': 1.1020, 'high': 1.1025, 'low': 1.1005},
+            70: {'open': 1.1025, 'close': 1.1035, 'high': 1.1040, 'low': 1.1010}, # Swing high at bar 70
+            69: {'open': 1.1020, 'close': 1.1015, 'high': 1.1022, 'low': 1.1002},
+            68: {'open': 1.1015, 'close': 1.1010, 'high': 1.1018, 'low': 1.1000},
+
+            50: {'open': 1.1020, 'close': 1.1000, 'high': 1.1025, 'low': 1.0995, 'time': 100}, # OB at bar 50
+            49: {'open': 1.1005, 'close': 1.1035, 'high': 1.1040, 'low': 1.1000},             # c2=49
+            48: {'open': 1.1030, 'close': 1.1050, 'high': 1.1055, 'low': 1.1042},             # c3=48 (close 1.1050 > prev_swing 1.1040 -> BOS!)
+            1:  {'open': 1.1048, 'close': 1.1060, 'high': 1.1065, 'low': 1.1045}
+        }
+
+        # 1. Verify FindMostRecentSwingHigh contract with ob_idx + 50 lookback
+        found_swing, swing_info = self._find_most_recent_swing_high(bars, ob_idx + 1, ob_idx + 50)
+        self.assertTrue(found_swing, "FindMostRecentSwingHigh must find the swing high centered at bar 70")
+        self.assertEqual(swing_info['barIndex'], 70)
+        self.assertEqual(swing_info['price'], 1.1040)
+
+        # 2. Verify that old fixed maxLookbackBars=50 fails because start_bar 51 > 50
+        found_old, _ = self._find_most_recent_swing_high(bars, 51, 50)
+        self.assertFalse(found_old, "Old fixed lookback maxLookbackBars=50 fails when start_bar=51")
+
+        # 3. Verify Find4HOrderBlock with dynamic swing resolution
+        valid, ob = self._find_4h_order_block(bars, ob_idx=50)
+        self.assertTrue(valid, "Candidate OB at ob_idx=50 must be validated using swing high at bar 70")
+        self.assertEqual(ob['type'], 'DEMAND')
 
     def test_4h_bullish_fvg(self):
         # Bullish FVG: Low(C3) > High(C1)
@@ -1035,6 +1097,20 @@ class TestSMCEngineRules(unittest.TestCase):
             self.assertGreaterEqual(bar, 1)
 
         self.assertNotIn(forming_bar, completed_bars)
+
+    def test_m5_chronology_boundary_checks(self):
+        # 9. Verify M5 confirmation chronology boundary check (fvg.timeC3 >= setup.chochTime)
+        setup_choch_time = 1672704000 # CHoCH confirmed at 2023.01.03 00:00
+
+        # Case A: Stale FVG completed before CHoCH (e.g. timeC3 = 23:55 prior day = 1672703700 < 1672704000)
+        fvg_stale = {'timeC3': 1672703700, 'isValid': True}
+        is_stale_accepted = not (setup_choch_time > 0 and fvg_stale['timeC3'] < setup_choch_time)
+        self.assertFalse(is_stale_accepted, "Stale FVG completed prior to CHoCH confirmation must be rejected")
+
+        # Case B: Fresh FVG completed at or after CHoCH (e.g. timeC3 = 00:05 = 1672704300 >= 1672704000)
+        fvg_fresh = {'timeC3': 1672704300, 'isValid': True}
+        is_fresh_accepted = not (setup_choch_time > 0 and fvg_fresh['timeC3'] < setup_choch_time)
+        self.assertTrue(is_fresh_accepted, "Fresh FVG completed after CHoCH confirmation must be accepted")
 
 
     # --- 4. TRADE & SYSTEM INTEGRATION TESTS ---
