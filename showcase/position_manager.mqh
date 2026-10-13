@@ -49,9 +49,9 @@ ENUM_ORDER_TYPE_FILLING GetSupportedFillingMode(string symbol)
 }
 
 // Global array or helper functions placeholder for position modification
-void ModifyPositionSL(ulong ticket, double newSL)
+bool ModifyPositionSL(ulong ticket, double newSL)
 {
-   if(!PositionSelectByTicket(ticket)) return;
+   if(!PositionSelectByTicket(ticket)) return false;
    string symbol = PositionGetString(POSITION_SYMBOL);
    double currentTP = PositionGetDouble(POSITION_TP);
 
@@ -66,15 +66,23 @@ void ModifyPositionSL(ulong ticket, double newSL)
    request.sl       = NormalizeDouble(newSL, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS));
    request.tp       = currentTP;
 
-   if(!OrderSend(request, result))
+   if(OrderSend(request, result))
    {
-      PrintFormat("[ERROR] Failed to modify SL for #%d: retcode %d", ticket, result.retcode);
+      if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
+         return true;
+      else
+         PrintFormat("[ERROR] Failed to modify SL for #%d: retcode %d", ticket, result.retcode);
    }
+   else
+   {
+      PrintFormat("[ERROR] OrderSend execution error modifying SL for #%d: retcode %d", ticket, result.retcode);
+   }
+   return false;
 }
 
-void ClosePosition(ulong ticket)
+bool ClosePosition(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket)) return;
+   if(!PositionSelectByTicket(ticket)) return false;
    string symbol = PositionGetString(POSITION_SYMBOL);
    long posType = PositionGetInteger(POSITION_TYPE);
    double volume = PositionGetDouble(POSITION_VOLUME);
@@ -93,16 +101,24 @@ void ClosePosition(ulong ticket)
    request.deviation    = 10;
    request.type_filling = GetSupportedFillingMode(symbol);
 
-   if(!OrderSend(request, result))
+   if(OrderSend(request, result))
    {
-       PrintFormat("[ERROR] ClosePosition failed for #%d: retcode %d",
+      if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
+         return true;
+      else
+         PrintFormat("[ERROR] ClosePosition failed for #%d: retcode %d", ticket, result.retcode);
+   }
+   else
+   {
+       PrintFormat("[ERROR] ClosePosition OrderSend execution error for #%d: retcode %d",
                    ticket, result.retcode);
    }
+   return false;
 }
 
-void ClosePartial(ulong ticket, double closeVolume)
+bool ClosePartial(ulong ticket, double closeVolume)
 {
-   if(!PositionSelectByTicket(ticket)) return;
+   if(!PositionSelectByTicket(ticket)) return false;
    string symbol = PositionGetString(POSITION_SYMBOL);
    long posType = PositionGetInteger(POSITION_TYPE);
 
@@ -120,11 +136,19 @@ void ClosePartial(ulong ticket, double closeVolume)
    request.deviation    = 10;
    request.type_filling = GetSupportedFillingMode(symbol);
 
-   if(!OrderSend(request, result))
+   if(OrderSend(request, result))
    {
-       PrintFormat("[ERROR] ClosePartial failed for #%d: retcode %d",
+      if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
+         return true;
+      else
+         PrintFormat("[ERROR] ClosePartial failed for #%d: retcode %d", ticket, result.retcode);
+   }
+   else
+   {
+       PrintFormat("[ERROR] ClosePartial OrderSend execution error for #%d: retcode %d",
                    ticket, result.retcode);
    }
+   return false;
 }
 
 double NormalizeVolume(string symbol, double volume)
@@ -271,10 +295,12 @@ void CheckPartialTP(PositionTracker &tracker)
       
       if(closeVolume > 0)
       {
-         ClosePartial(tracker.ticket, closeVolume);
-         tracker.partialClosed = true;
-         PrintFormat("[PTP] #%d — Partial close %.2f lots at %.2f R (%.1f%% volume)",
-                     tracker.ticket, closeVolume, profit_R, Partial_Volume_Pct);
+         if(ClosePartial(tracker.ticket, closeVolume))
+         {
+            tracker.partialClosed = true;
+            PrintFormat("[PTP] #%d — Partial close %.2f lots at %.2f R (%.1f%% volume)",
+                        tracker.ticket, closeVolume, profit_R, Partial_Volume_Pct);
+         }
       }
    }
 }

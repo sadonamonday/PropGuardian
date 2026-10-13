@@ -18,10 +18,10 @@ input bool              SMC_UseStrategy          = true;         // Enable PropG
 input ENUM_TIMEFRAMES   SMC_4H_Timeframe         = PERIOD_H4;    // Context Timeframe (4H)
 input ENUM_TIMEFRAMES   SMC_M15_Timeframe        = PERIOD_M15;   // Structural Timeframe (M15)
 input ENUM_TIMEFRAMES   SMC_M5_Timeframe         = PERIOD_M5;    // Execution Timeframe (M5)
-input double            SMC_FVG_EntryPercent     = 60.0;         // FVG retrace depth; 50 = midpoint, 60 = shallower entry
+input double            SMC_FVG_EntryPercent     = 50.0;         // FVG retrace depth; 50 = midpoint, 60 = shallower entry
 input int               SMC_M15_SwingLookback    = 24;           // Recent M15 swings considered for liquidity sweeps
 input int               SMC_M5_SwingLookback     = 20;           // Recent M5 swings considered for displacement
-input double            SMC_Min_RewardRisk        = 1.5;          // Reject structural targets below this reward/risk
+input double            SMC_Min_RewardRisk        = 0.0;          // Reject structural targets below this reward/risk (0.0 = next opposing target)
 input bool              SMC_DebugLogging         = true;         // Enable Structured Debug Logging
 input bool              SMC_DrawChartObjects     = true;         // Enable Visual Chart Objects on MT5 Tester/Chart
 input int               SMC_MaxActiveSetups      = 5;            // Max Simultaneous Active Setups Across Symbols
@@ -1908,9 +1908,11 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
          SMCFVG fvg;
          if(CheckM5DisplacementAndFVG(symbol, setup.direction, m5Swing, fvg))
          {
-            if(setup.chochTime > 0 && fvg.timeC3 < setup.chochTime)
+            datetime m15Sec = PeriodSeconds(SMC_M15_Timeframe);
+            datetime m5Sec  = PeriodSeconds(SMC_M5_Timeframe);
+            if(setup.chochTime > 0 && (fvg.timeC3 + m5Sec < setup.chochTime + m15Sec))
             {
-               // Reject stale M5 FVG sequence completed prior to M15 CHoCH confirmation
+               // Reject stale M5 FVG sequence completed prior to M15 CHoCH candle close
                break;
             }
 
@@ -2009,6 +2011,15 @@ void ProcessSMCSetupStateMachine(SMCSetup &setup)
             }
          }
          setup.stopDistance = MathAbs(setup.entryPrice - setup.slPrice);
+
+         long stopLevelPoints = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+         double minStopDist = stopLevelPoints * point;
+         if(minStopDist > 0.0 && setup.stopDistance < minStopDist)
+         {
+            InvalidateSetup(setup, StringFormat("Stop distance %.5f is smaller than broker stop level %.5f",
+                                                 setup.stopDistance, minStopDist));
+            break;
+         }
 
          // Calculate Opposing Structural TP (NO FIXED-R FALLBACK PERMITTED)
          SMCSwing oppSwing;

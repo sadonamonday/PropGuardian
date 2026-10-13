@@ -1099,18 +1099,20 @@ class TestSMCEngineRules(unittest.TestCase):
         self.assertNotIn(forming_bar, completed_bars)
 
     def test_m5_chronology_boundary_checks(self):
-        # 9. Verify M5 confirmation chronology boundary check (fvg.timeC3 >= setup.chochTime)
-        setup_choch_time = 1672704000 # CHoCH confirmed at 2023.01.03 00:00
+        # 9. Verify M5 confirmation chronology boundary check (fvg.timeC3 + 300 >= setup.chochTime + 900)
+        setup_choch_time = 1672704000 # M15 CHoCH candle bar1 time = 2023.01.03 00:00. Completed at 00:15 (1672704900)
+        m15_sec = 900
+        m5_sec = 300
 
-        # Case A: Stale FVG completed before CHoCH (e.g. timeC3 = 23:55 prior day = 1672703700 < 1672704000)
-        fvg_stale = {'timeC3': 1672703700, 'isValid': True}
-        is_stale_accepted = not (setup_choch_time > 0 and fvg_stale['timeC3'] < setup_choch_time)
-        self.assertFalse(is_stale_accepted, "Stale FVG completed prior to CHoCH confirmation must be rejected")
+        # Case A: Stale FVG completed before M15 CHoCH candle close (timeC3 = 00:05, completes at 00:10 = 1672704600 < 1672704900)
+        fvg_stale = {'timeC3': 1672704300, 'isValid': True}
+        is_stale_accepted = not (setup_choch_time > 0 and (fvg_stale['timeC3'] + m5_sec < setup_choch_time + m15_sec))
+        self.assertFalse(is_stale_accepted, "Stale FVG completed prior to M15 CHoCH candle close must be rejected")
 
-        # Case B: Fresh FVG completed at or after CHoCH (e.g. timeC3 = 00:05 = 1672704300 >= 1672704000)
-        fvg_fresh = {'timeC3': 1672704300, 'isValid': True}
-        is_fresh_accepted = not (setup_choch_time > 0 and fvg_fresh['timeC3'] < setup_choch_time)
-        self.assertTrue(is_fresh_accepted, "Fresh FVG completed after CHoCH confirmation must be accepted")
+        # Case B: Fresh FVG completed at or after M15 CHoCH candle close (timeC3 = 00:10, completes at 00:15 = 1672704900 >= 1672704900)
+        fvg_fresh = {'timeC3': 1672704600, 'isValid': True}
+        is_fresh_accepted = not (setup_choch_time > 0 and (fvg_fresh['timeC3'] + m5_sec < setup_choch_time + m15_sec))
+        self.assertTrue(is_fresh_accepted, "Fresh FVG completed at or after M15 CHoCH candle close must be accepted")
 
 
     # --- 4. TRADE & SYSTEM INTEGRATION TESTS ---
@@ -1697,25 +1699,42 @@ class TestPendingOrderInvalidationCancellation(unittest.TestCase):
     # --- 13. NEW SMC STRATEGY INPUTS & RULES TESTS ---
 
     def test_tp_scan_for_min_rr(self):
-        # Test TP scan finding nearest swing with R:R >= min_rr (1.5)
+        # Test TP scan finding nearest opposing swing when SMC_Min_RewardRisk = 0.0
         entry_price = 1.1000
         stop_dist = 0.0010 # SL = 1.0990
-        min_rr = 1.5 # Min TP = 1.1015
+        min_rr = 0.0 # Default updated from 1.5 to 0.0 to target next opposing structural level
 
         # Swings in lookback:
-        # Swing 1: price 1.1010 (R:R = 1.0 < 1.5) -> fails R:R
-        # Swing 2: price 1.1020 (R:R = 2.0 >= 1.5) -> passes R:R
-        # Swing 3: price 1.1050 (R:R = 5.0 >= 1.5) -> passes R:R
+        # Swing 1: price 1.1010 (R:R = 1.0 >= 0.0) -> next opposing target
+        # Swing 2: price 1.1020 (R:R = 2.0 >= 0.0)
+        # Swing 3: price 1.1050 (R:R = 5.0 >= 0.0)
         swings = [
             {'price': 1.1010, 'barIndex': 5},
             {'price': 1.1020, 'barIndex': 10},
             {'price': 1.1050, 'barIndex': 15},
         ]
 
-        # Scan for nearest qualifying swing (price closest to entry_price >= entry + min_rr*stop_dist)
+        # Scan for nearest qualifying swing
         qualifying = [s for s in swings if (s['price'] - entry_price) / stop_dist >= min_rr]
         nearest = min(qualifying, key=lambda s: s['price'])
-        self.assertEqual(nearest['price'], 1.1020)
+        self.assertEqual(nearest['price'], 1.1010)
+
+    def test_partial_tp_success_flag_handling(self):
+        # Test partial TP tracking flag update only on successful execution
+        tracker = {'partialClosed': False}
+
+        def close_partial_sim(order_send_success):
+            return order_send_success
+
+        # OrderSend fails -> partialClosed remains False
+        if close_partial_sim(order_send_success=False):
+            tracker['partialClosed'] = True
+        self.assertFalse(tracker['partialClosed'])
+
+        # OrderSend succeeds -> partialClosed becomes True
+        if close_partial_sim(order_send_success=True):
+            tracker['partialClosed'] = True
+        self.assertTrue(tracker['partialClosed'])
 
     def test_poi_revalidation_and_expiry(self):
         # 4H POI Demand Range: [1.1000, 1.1050]
